@@ -81,6 +81,14 @@ printf '%s\n' '127.0.0.1:18081' > pares-A.txt
 
 El archivo admite un `HOST:PUERTO` por línea, líneas vacías y comentarios que empiezan con `#`. La tienda revisa el archivo aproximadamente cada segundo. Un archivo vacío permite arrancar una tienda de cadena antes de agregar sus pares.
 
+## Recuperar una tienda después del corte
+
+En la demo predeterminada B permanece apagada hasta que termina esa corrida. Para probar un reinicio, inicia las tiendas a mano como en el ejemplo anterior. Detén B, deja a A ejecutándose y vuelve a lanzar B con el mismo identificador, puerto y archivo `ventas-B.log`. Guarda el archivo entre los dos arranques.
+
+B recupera sus propias ventas del archivo y consulta ventas individuales en las tiendas que responden. Mientras las carga, el estado puede aparecer como `RECUPERANDO` y B rechaza compras nuevas. Si el total que recuperó sigue por debajo de $100, vuelve a atender. Si la cadena ya alcanzó la meta según los registros disponibles, B queda cerrada. Si ninguna otra tienda responde, B solo dispone de su copia local hasta que se restablezca la conexión.
+
+Para darle a B más tiempo para recibir compradores antes del apagón simulado, ejecuta `BLACKOUT_APAGON_EN=2 bash demo.sh`. El momento de cada compra sigue siendo aleatorio. Con `bash demo.sh cierre` puedes hacer la prueba con B en línea.
+
 ## Cómo funciona
 
 - Cada tienda corre en un proceso. Los sockets TCP, como en los demos de cliente y servidor de clase, conectan a compradores, tiendas y monitor. El monitor solo consulta; una tienda puede vender aunque el monitor esté desconectado.
