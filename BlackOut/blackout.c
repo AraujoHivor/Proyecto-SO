@@ -23,7 +23,7 @@
 #define LINEA 256
 #define ESPERA 800
 
-enum { RECEPTOR, PUBLICADOR, HILOS };
+enum { RECEPTOR, AUXILIAR, PUBLICADOR, HILOS };
 
 _Static_assert(ATOMIC_BOOL_LOCK_FREE == 2, "Se requiere un indicador atómico sin bloqueo");
 static atomic_bool terminar = ATOMIC_VAR_INIT(false);
@@ -55,10 +55,17 @@ typedef struct {
     unsigned long long conexiones;
     Par *pares;
     Venta *ventas;
-    size_t usadas, capacidad;
+    size_t usadas, capacidad, publicado_hasta;
+    bool recuperando;
     atomic_bool eligiendo[HILOS];
     atomic_ullong boleto[HILOS];
 } Tienda;
+
+typedef struct {
+    Tienda *tienda;
+    int escucha;
+    int hilo;
+} Receptor;
 
 static int positivo(const char *s, long long limite, long long *valor)
 {
@@ -176,7 +183,8 @@ static int abrir_socket(const char *host, const char *puerto)
     if (fd >= 0 && !host) {
         int si = 1;
         setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &si, sizeof si);
-        ok = bind(fd, a->ai_addr, a->ai_addrlen) == 0 && listen(fd, 20) == 0;
+        ok = fcntl(fd, F_SETFL, O_NONBLOCK) == 0 &&
+             bind(fd, a->ai_addr, a->ai_addrlen) == 0 && listen(fd, 20) == 0;
     } else if (fd >= 0 && fcntl(fd, F_SETFL, O_NONBLOCK) == 0) {
         ok = connect(fd, a->ai_addr, a->ai_addrlen) == 0;
         if (!ok && errno == EINPROGRESS) {
@@ -376,12 +384,12 @@ static void *publicar(void *arg)
             ultima_lista = reloj.tv_sec;
             cargar_pares(t);
         }
-        int hay_corte = 0;
+        bool hay_corte = false, corte_nuevo = false;
         for (int i = 0; i < t->cantidad && !atomic_load(&terminar); i++) {
             Par *p = &t->pares[i];
             char r[LINEA], id[32];
-            int disponible = pedir(p->host, p->puerto, "ESTADO\n", r) &&
-                             sscanf(r, "ESTADO %31s", id) == 1 && es_id(id) &&
+            int disponible = pedir(p->host, p->puerto, "SALUDO\n", r) &&
+                             sscanf(r, "SALUDO %31s", id) == 1 && es_id(id) &&
                              strcmp(id, t->id) != 0;
             if (disponible) {
                 if (*p->id && strcmp(p->id, id) != 0) {
@@ -395,16 +403,25 @@ static void *publicar(void *arg)
                 }
                 strcpy(p->id, id);
             } else {
-                if (p->disponible) printf("%s pierde conexión con %s\n", t->id, p->id);
+                if (p->disponible) {
+                    printf("%s pierde conexión con %s\n", t->id, p->id);
+                    corte_nuevo = true;
+                }
                 p->orden = 0;
-                hay_corte = 1;
+                hay_corte = true;
             }
             p->disponible = disponible;
+        }
+        if (corte_nuevo) {
+            /* Revisamos copias anteriores del origen que acaba de apagarse. */
+            for (int i = 0; i < t->cantidad; i++) t->pares[i].consultado = 0;
         }
         if (t->cantidad > 1) qsort(t->pares, (size_t)t->cantidad, sizeof *t->pares, comparar_orden);
         tomar_turno(t, PUBLICADOR);
         size_t limite = t->usadas;
         dejar_turno(t, PUBLICADOR);
+        size_t confirmado = limite;
+        bool recuperando = false;
         for (int i = 0; i < t->cantidad && !atomic_load(&terminar); i++) {
             Par *p = &t->pares[i];
             if (!p->disponible) continue;
@@ -415,42 +432,60 @@ static void *publicar(void *arg)
                 if (strcmp(v.origen, t->id) == 0 && !enviar_venta(p, &v)) break;
                 p->enviado++;
             }
+            if (p->enviado < confirmado) confirmado = p->enviado;
             if (!hay_corte) continue;
+            bool fin = false;
             for (int paso = 0; paso < 16 && !atomic_load(&terminar); paso++) {
                 char orden[LINEA], r[LINEA];
                 snprintf(orden, sizeof orden, "VENTA %zu\n", p->consultado + 1);
                 if (!pedir(p->host, p->puerto, orden, r)) break;
                 if (strcmp(r, "FIN") == 0) {
-                    p->consultado = 0;
+                    fin = true;
                     break;
                 }
                 Venta v;
                 if (strncmp(r, "VENTA ", 6) || !leer_venta(r + 6, &v)) break;
                 if (origen_caido(t, v.origen)) {
                     tomar_turno(t, PUBLICADOR);
-                    guardar(t, v, 1);
+                    const char *respuesta = guardar(t, v, 1);
                     dejar_turno(t, PUBLICADOR);
+                    if (strncmp(respuesta, "OK ", 3) != 0) break;
                 }
                 p->consultado++;
             }
+            if (!fin) recuperando = true;
         }
+        tomar_turno(t, PUBLICADOR);
+        t->publicado_hasta = confirmado;
+        t->recuperando = recuperando;
+        dejar_turno(t, PUBLICADOR);
         nanosleep(&espera, NULL);
     }
     return NULL;
 }
 
-static void atender(Tienda *t, int fd)
+static void atender(Tienda *t, int fd, int hilo)
 {
     char linea[LINEA], r[LINEA];
     const char *respuesta = "ERROR SOLICITUD\n";
     if (!mensaje(fd, linea)) return;
+    if (t->en_cadena && strcmp(linea, "SALUDO") == 0) {
+        snprintf(r, sizeof r, "SALUDO %s\n", t->id);
+        escribir(fd, r, strlen(r));
+        return;
+    }
     Venta v;
     long long n;
-    tomar_turno(t, RECEPTOR);
+    tomar_turno(t, hilo);
     if (strcmp(linea, "ESTADO") == 0) {
         snprintf(r, sizeof r, "ESTADO %s %s $%lld.%02lld $%lld.%02lld\n", t->id,
                  t->total < t->meta ? "ABIERTA" : "CERRADA",
                  t->propio / 100, t->propio % 100, t->total / 100, t->total % 100);
+        respuesta = r;
+    } else if (strcmp(linea, "PENDIENTES") == 0) {
+        size_t pendientes = t->en_cadena ? t->usadas - t->publicado_hasta : 0;
+        if (!pendientes && t->recuperando) pendientes = 1;
+        snprintf(r, sizeof r, "PENDIENTES %zu\n", pendientes);
         respuesta = r;
     } else if (strncmp(linea, "COMPRA ", 7) == 0 && positivo(linea + 7, LLONG_MAX, &n)) {
         if (t->total >= t->meta) respuesta = "ERROR CERRADA\n";
@@ -473,8 +508,24 @@ static void atender(Tienda *t, int fd)
             respuesta = r;
         }
     }
-    dejar_turno(t, RECEPTOR);
+    dejar_turno(t, hilo);
     escribir(fd, respuesta, strlen(respuesta));
+}
+
+/* Dos hilos atienden sockets; Bakery protege los cambios al registro. */
+static void *recibir(void *arg)
+{
+    Receptor *r = arg;
+    while (!atomic_load(&terminar)) {
+        struct pollfd entrada = {r->escucha, POLLIN, 0};
+        if (poll(&entrada, 1, 250) <= 0) continue;
+        int otro = accept(r->escucha, NULL, NULL);
+        if (otro >= 0) {
+            atender(r->tienda, otro, r->hilo);
+            close(otro);
+        }
+    }
+    return NULL;
 }
 
 static int tienda(int argc, char **argv)
@@ -505,35 +556,30 @@ static int tienda(int argc, char **argv)
         }
     }
     int fd = abrir_socket(NULL, argv[3]);
-    pthread_t hilo;
+    pthread_t auxiliar, publicador;
+    Receptor principal = {&t, fd, RECEPTOR};
+    Receptor segundo = {&t, fd, AUXILIAR};
     struct sigaction accion = {0};
     accion.sa_handler = pedir_cierre;
     sigemptyset(&accion.sa_mask);
-    if (fd < 0 || !abrir_registro(&t, argv[5]) ||
-        sigaction(SIGINT, &accion, NULL) != 0 || sigaction(SIGTERM, &accion, NULL) != 0 ||
-        (t.en_cadena && pthread_create(&hilo, NULL, publicar, &t))) {
+    bool ok = fd >= 0 && abrir_registro(&t, argv[5]) &&
+              sigaction(SIGINT, &accion, NULL) == 0 && sigaction(SIGTERM, &accion, NULL) == 0;
+    bool auxiliar_activo = ok && pthread_create(&auxiliar, NULL, recibir, &segundo) == 0;
+    bool publicador_activo = auxiliar_activo && t.en_cadena &&
+                              pthread_create(&publicador, NULL, publicar, &t) == 0;
+    ok = auxiliar_activo && (!t.en_cadena || publicador_activo);
+    if (ok) recibir(&principal);
+    else {
         fprintf(stderr, "%s: error al iniciar puerto, registro o hilo\n", t.id);
-        if (fd >= 0) close(fd);
-        if (t.archivo >= 0) close(t.archivo);
-        free(t.pares);
-        free(t.ventas);
-        return 1;
+        atomic_store(&terminar, true);
     }
-    while (!atomic_load(&terminar)) {
-        struct pollfd receptor = {fd, POLLIN, 0};
-        if (poll(&receptor, 1, 250) <= 0) continue;
-        int otro = accept(fd, NULL, NULL);
-        if (otro >= 0) {
-            atender(&t, otro);
-            close(otro);
-        }
-    }
-    if (t.en_cadena) pthread_join(hilo, NULL);
-    close(fd);
-    close(t.archivo);
+    if (auxiliar_activo) pthread_join(auxiliar, NULL);
+    if (publicador_activo) pthread_join(publicador, NULL);
+    if (fd >= 0) close(fd);
+    if (t.archivo >= 0) close(t.archivo);
     free(t.pares);
     free(t.ventas);
-    return 0;
+    return ok ? 0 : 1;
 }
 
 static int cliente(int argc, char **argv)
@@ -542,6 +588,7 @@ static int cliente(int argc, char **argv)
     long long puerto, monto, numero;
     if (argc < 5 || !positivo(argv[3], 65535, &puerto)) return 2;
     if (argc == 5 && strcmp(argv[4], "ESTADO") == 0) strcpy(orden, "ESTADO\n");
+    else if (argc == 5 && strcmp(argv[4], "PENDIENTES") == 0) strcpy(orden, "PENDIENTES\n");
     else if (argc == 6 && strcmp(argv[4], "COMPRA") == 0 &&
              dolares(argv[5], &monto)) {
         snprintf(orden, sizeof orden, "COMPRA %lld\n", monto);
@@ -563,7 +610,7 @@ int main(int argc, char **argv)
     else if (argc > 1 && strcmp(argv[1], "cliente") == 0) resultado = cliente(argc, argv);
     if (resultado == 2) {
         fputs("blackout tienda ID PUERTO META_USD REGISTRO [HOST:PUERTO ... | @ARCHIVO]\n"
-              "blackout cliente HOST PUERTO ESTADO | COMPRA MONTO_USD\n", stderr);
+              "blackout cliente HOST PUERTO ESTADO | PENDIENTES | COMPRA MONTO_USD\n", stderr);
     }
     return resultado;
 }

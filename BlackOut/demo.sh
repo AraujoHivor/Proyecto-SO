@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-escenario=${1:-cierre}
+escenario=${1:-apagon}
 puerto_base=${BLACKOUT_PUERTO_BASE:-18080}
-duracion=${BLACKOUT_DURACION:-18}
+duracion=${BLACKOUT_DURACION:-30}
 meta=${BLACKOUT_META:-100.00}
 instante_apagon=${BLACKOUT_APAGON_EN:-1}
 mostrar_registros=${BLACKOUT_MOSTRAR_REGISTROS:-0}
@@ -42,6 +42,11 @@ ids=(A B C D)
 puertos=("$puerto_base" "$((puerto_base + 1))" "$((puerto_base + 2))" "$((puerto_base + 3))")
 tiendas=()
 simuladores=()
+historial=()
+total_cadena=
+estado_independiente=
+total_independiente=
+cadena_cerrada=0
 temporizador=
 
 limpiar() {
@@ -97,35 +102,80 @@ esperar_tienda() {
 }
 
 consultar_tiendas() {
-    local indice estado archivo
+    local indice respuesta id estado ventas total referencia= coincide=1 salida_independiente
+    cadena_cerrada=1
+    estado_independiente=
+    total_independiente=
+
+    printf '\n[monitor %2ds] Cadena A-B-C\n' "$SECONDS"
     for indice in "${!ids[@]}"; do
-        archivo=$temporal/${ids[indice]}.estado
-        if estado=$("$binario" cliente "$host" "${puertos[indice]}" ESTADO 2>/dev/null); then
-            printf '%s\n' "$estado" >"$archivo"
-        elif [[ -s $archivo ]]; then
-            estado="${ids[indice]} SIN RESPUESTA. Último estado conocido: $(<"$archivo")"
+        id=${ids[indice]}
+        if [[ -n ${tiendas[indice]:-} ]] &&
+            respuesta=$("$binario" cliente "$host" "${puertos[indice]}" ESTADO 2>/dev/null); then
+            read -r _ id estado ventas total <<<"$respuesta"
+            historial[indice]="$estado · ventas propias $ventas"
+            if [[ $estado == CERRADA ]]; then
+                : >"$temporal/detener-$id"
+            fi
+            if (( indice == 3 )); then
+                estado_independiente=$estado
+                total_independiente=$ventas
+                salida_independiente="D independiente · $estado · ventas $ventas"
+                continue
+            fi
+            printf '  %s · %s\n' "$id" "${historial[indice]}"
+            historial[indice]+=" · copia de cadena $total"
+            if [[ $estado != CERRADA ]]; then
+                cadena_cerrada=0
+            fi
+            if [[ -z $referencia ]]; then
+                referencia=$total
+            elif [[ $total != "$referencia" ]]; then
+                coincide=0
+            fi
         else
-            estado="${ids[indice]} SIN RESPUESTA. Aún no hay datos."
+            estado="$id SIN RESPUESTA · último dato: ${historial[indice]:-sin datos}"
+            if (( indice == 3 )); then
+                salida_independiente=$estado
+                continue
+            fi
+            printf '  %s\n' "$estado"
+            if [[ -n ${tiendas[indice]:-} ]]; then
+                coincide=0
+                cadena_cerrada=0
+            fi
         fi
-        printf '[monitor %2ds] %s\n' "$SECONDS" "$estado"
     done
+    total_cadena=
+    if (( coincide )) && [[ -n $referencia ]]; then
+        total_cadena=$referencia
+        printf '  Total de la cadena %s\n' "$total_cadena"
+    else
+        printf '  Total de la cadena pendiente de confirmar\n'
+    fi
+    printf '  %s\n' "$salida_independiente"
 }
 
-ejecutar_monitor() {
-    trap - EXIT INT TERM
-    while sleep 1 && [[ ! -e $detener ]]; do
-        consultar_tiendas
+envios_confirmados() {
+    local indice respuesta
+    for indice in 0 1 2; do
+        if [[ -z ${tiendas[indice]:-} ]]; then
+            continue
+        fi
+        respuesta=$("$binario" cliente "$host" "${puertos[indice]}" PENDIENTES 2>/dev/null) || return 1
+        [[ $respuesta == 'PENDIENTES 0' ]] || return 1
     done
 }
 
 ejecutar_comprador() {
     trap - EXIT INT TERM
-    local indice=$1 demora pausa centavos monto respuesta
-    while [[ ! -e $detener ]]; do
+    local indice=$1 demora pausa centavos monto respuesta detener_tienda
+    detener_tienda=$temporal/detener-${ids[indice]}
+    while [[ ! -e $detener && ! -e $detener_tienda ]]; do
         demora=$((300 + RANDOM % 801))
         printf -v pausa '%d.%03d' "$((demora / 1000))" "$((demora % 1000))"
         sleep "$pausa"
-        if [[ -e $detener ]]; then
+        if [[ -e $detener || -e $detener_tienda ]]; then
             break
         fi
         centavos=$((700 + RANDOM % 901))
@@ -133,6 +183,9 @@ ejecutar_comprador() {
         respuesta=$("$binario" cliente "$host" "${puertos[indice]}" COMPRA "$monto" 2>/dev/null) || true
         printf '[compra  %2ds] %s · $%s · %s\n' \
             "$SECONDS" "${ids[indice]}" "$monto" "${respuesta:-SIN RESPUESTA}"
+        if [[ $respuesta == 'ERROR CERRADA' ]]; then
+            break
+        fi
     done
 }
 
@@ -146,36 +199,53 @@ for indice in "${!ids[@]}"; do
     esperar_tienda "$indice"
 done
 
-printf 'Meta de $%s para la cadena A-B-C y para la tienda independiente D.\n' "${meta#\$}"
-printf 'El monitor muestra tienda, estado, ventas propias y total en dólares.\n'
+printf 'Meta compartida de $%s para A, B y C. D usa su propia meta de $%s.\n' "${meta#\$}" "${meta#\$}"
 SECONDS=0
-consultar_tiendas
 for indice in "${!ids[@]}"; do
     ejecutar_comprador "$indice" &
     simuladores+=("$!")
 done
-ejecutar_monitor &
-simuladores+=("$!")
 
-if [[ $escenario == apagon ]]; then
-    esperar_segundos "$instante_apagon"
-    printf '[demo    %2ds] Se simula un apagón en B.\n' "$SECONDS"
-    kill -KILL "${tiendas[1]}"
-    wait "${tiendas[1]}" 2>/dev/null || true
-    unset 'tiendas[1]'
-    esperar_segundos "$((duracion - instante_apagon))"
-else
-    esperar_segundos "$duracion"
-fi
+cierre_anterior=
+cierre_anunciado=0
+while true; do
+    consultar_tiendas
+    if (( cadena_cerrada )) && [[ -n $total_cadena ]] && envios_confirmados; then
+        if [[ $total_cadena == "$cierre_anterior" ]]; then
+            if [[ $estado_independiente == CERRADA ]]; then
+                printf 'La cadena cerró con %s y D cerró por separado con %s. Fin de la demo.\n' \
+                    "$total_cadena" "$total_independiente"
+                break
+            fi
+            if (( ! cierre_anunciado )); then
+                printf 'La cadena cerró con %s. D sigue hasta su propia meta.\n' "$total_cadena"
+                cierre_anunciado=1
+            fi
+        fi
+        cierre_anterior=$total_cadena
+    else
+        cierre_anterior=
+    fi
+    if (( SECONDS >= duracion )); then
+        printf 'Se alcanzó el límite de %s segundos antes de confirmar todos los cierres.\n' "$duracion"
+        break
+    fi
+    if [[ $escenario == apagon && -n ${tiendas[1]:-} ]] && (( SECONDS >= instante_apagon )); then
+        printf '[demo    %2ds] Se simula un apagón en B.\n' "$SECONDS"
+        : >"$temporal/detener-B"
+        kill -KILL "${tiendas[1]}" 2>/dev/null || true
+        wait "${tiendas[1]}" 2>/dev/null || true
+        unset 'tiendas[1]'
+        cierre_anterior=
+    fi
+    esperar_segundos 1
+done
 
 : >"$detener"
 for pid in "${simuladores[@]}"; do
     wait "$pid" || true
 done
 simuladores=()
-sleep 0.3
-printf '\nÚltima consulta tras detener las compras\n'
-consultar_tiendas
 
 if [[ $mostrar_registros == 1 ]]; then
     for id in "${ids[@]}"; do
