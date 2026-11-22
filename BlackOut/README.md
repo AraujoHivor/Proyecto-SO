@@ -71,6 +71,10 @@ Inicia una tienda independiente dejando el comando hasta el archivo de ventas. P
 
 Para probar el reinicio manualmente, apaga B y vuelve a usar su comando con el mismo ID, puerto y archivo de ventas. Deja A en ejecución para que B pueda recuperar lo que le falta.
 
+## Cómo seguir el código
+
+En `blackout.c`, lee primero `atender()` para ver cómo entra una compra. Luego sigue `guardar()` para ver cuándo se registra y `publicar()` para ver cómo llega a las demás tiendas. `recuperar_ventas()` lee las ventas que quedaron pendientes. En `red.h` están la apertura del socket, la espera y la lectura de mensajes TCP.
+
 ## Cómo funciona
 
 - **Procesos y sockets.** Cada tienda es un proceso. Las tiendas y sus clientes se conectan por TCP. Las tiendas se mandan ventas individuales, con tienda de origen, número y monto. Cada tienda suma sus copias en centavos enteros.

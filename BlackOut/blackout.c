@@ -2,10 +2,7 @@
 
 #include <ctype.h>
 #include <errno.h>
-#include <fcntl.h>
 #include <limits.h>
-#include <netdb.h>
-#include <poll.h>
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
@@ -16,12 +13,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
-#include <sys/time.h>
-#include <time.h>
 #include <unistd.h>
 
-#define LINEA 256
-#define ESPERA 800
+#include "red.h"
 
 enum { RECEPTOR, AUXILIAR, PUBLICADOR, HILOS };
 
@@ -41,9 +35,8 @@ typedef struct {
 
 typedef struct {
     char host[128], puerto[6], id[32];
-    int disponible;
     size_t enviado, consultado; /* Hasta dónde le enviamos y hasta dónde leímos. */
-    unsigned long long orden;
+    unsigned long long orden; /* Cero si el par no responde. */
 } Par;
 
 typedef struct {
@@ -84,12 +77,11 @@ static int dolares(const char *s, long long *centavos)
 {
     if (*s == '$') s++;
     if (!isdigit((unsigned char)*s)) return 0;
-    long long unidades = 0;
-    while (isdigit((unsigned char)*s)) {
-        int digito = *s++ - '0';
-        if (unidades > (LLONG_MAX - digito) / 10) return 0;
-        unidades = unidades * 10 + digito;
-    }
+    char *fin;
+    errno = 0;
+    long long unidades = strtoll(s, &fin, 10);
+    if (errno) return 0;
+    s = fin;
     int fraccion = 0;
     if (*s == '.') {
         s++;
@@ -143,32 +135,11 @@ static void dejar_turno(Tienda *t, int hilo)
     atomic_store(&t->boleto[hilo], 0);
 }
 
-/* TCP entrega un flujo de bytes. El salto de línea marca el final del mensaje. */
-static int mensaje(int fd, char linea[LINEA])
-{
-    struct timespec inicio, ahora;
-    if (clock_gettime(CLOCK_MONOTONIC, &inicio) != 0) return 0;
-    for (size_t i = 0; i + 1 < LINEA; i++) {
-        if (clock_gettime(CLOCK_MONOTONIC, &ahora) != 0) return 0;
-        long usado = (ahora.tv_sec - inicio.tv_sec) * 1000 +
-                     (ahora.tv_nsec - inicio.tv_nsec) / 1000000;
-        struct pollfd p = {fd, POLLIN, 0};
-        if (usado >= ESPERA || poll(&p, 1, ESPERA - (int)usado) <= 0) return 0;
-        if (read(fd, &linea[i], 1) != 1 || !linea[i]) return 0;
-        if (linea[i] == '\n') {
-            linea[i] = '\0';
-            return 1;
-        }
-    }
-    return 0;
-}
-
 static int escribir(int fd, const char *s, size_t n, bool por_red)
 {
     while (n) {
         if (por_red) {
-            struct pollfd p = {fd, POLLOUT, 0};
-            int listo = poll(&p, 1, ESPERA);
+            int listo = esperar_socket(fd, POLLOUT, ESPERA);
             if (listo < 0 && errno == EINTR && !atomic_load(&terminar)) continue;
             if (listo <= 0) return 0;
         }
@@ -190,36 +161,6 @@ static int confirmar_archivo(int fd)
     return resultado == 0;
 }
 
-static int abrir_socket(const char *host, const char *puerto)
-{
-    struct addrinfo info = {0}, *a;
-    info.ai_family = AF_INET;
-    info.ai_socktype = SOCK_STREAM;
-    info.ai_flags = host ? 0 : AI_PASSIVE;
-    if (getaddrinfo(host, puerto, &info, &a) != 0) return -1;
-    int fd = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
-    int ok = 0;
-    if (fd >= 0 && !host) {
-        int si = 1;
-        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &si, sizeof si);
-        ok = fcntl(fd, F_SETFL, O_NONBLOCK) == 0 &&
-             bind(fd, a->ai_addr, a->ai_addrlen) == 0 && listen(fd, 20) == 0;
-    } else if (fd >= 0 && fcntl(fd, F_SETFL, O_NONBLOCK) == 0) {
-        ok = connect(fd, a->ai_addr, a->ai_addrlen) == 0;
-        if (!ok && errno == EINPROGRESS) {
-            struct pollfd p = {fd, POLLOUT, 0};
-            int error;
-            socklen_t tam = sizeof error;
-            ok = poll(&p, 1, ESPERA) > 0 &&
-                 getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &tam) == 0 && !error;
-        }
-    }
-    freeaddrinfo(a);
-    if (ok) return fd;
-    if (fd >= 0) close(fd);
-    return -1;
-}
-
 static int pedir(const char *host, const char *puerto, const char *orden, char r[LINEA])
 {
     int fd = abrir_socket(host, puerto);
@@ -237,14 +178,14 @@ static int leer_venta(const char *linea, Venta *v)
            positivo(monto, LLONG_MAX, &v->monto);
 }
 
-static const char *guardar(Tienda *t, Venta v, int disco)
+static const char *guardar(Tienda *t, Venta v, bool disco)
 {
     if (disco && t->registro_danado) return "ERROR REGISTRO\n";
     /* Si se perdió una confirmación, el par puede mandar la misma venta de nuevo. */
     for (size_t i = 0; i < t->usadas; i++) {
-        Venta anterior = t->ventas[i];
-        if (anterior.numero == v.numero && strcmp(anterior.origen, v.origen) == 0) {
-            return anterior.monto == v.monto ? "OK DUPLICADA\n" : "ERROR CONFLICTO\n";
+        const Venta *anterior = &t->ventas[i];
+        if (anterior->numero == v.numero && strcmp(anterior->origen, v.origen) == 0) {
+            return anterior->monto == v.monto ? "OK DUPLICADA\n" : "ERROR CONFLICTO\n";
         }
     }
     if (v.monto > LLONG_MAX - t->total) return "ERROR TOTAL\n";
@@ -302,7 +243,7 @@ static int abrir_registro(Tienda *t, const char *ruta)
             break;
         }
         /* Al arrancar reconstruyo los totales con las líneas que ya están guardadas. */
-        if (!leer_venta(linea, &v) || strncmp(guardar(t, v, 0), "OK", 2)) {
+        if (!leer_venta(linea, &v) || strncmp(guardar(t, v, false), "OK", 2)) {
             ok = 0;
             break;
         }
@@ -331,42 +272,26 @@ static int consultar_venta(const Par *p, size_t indice, Venta *v)
     return 1;
 }
 
-/* Al reiniciar, consulto a los pares que responden antes de aceptar compras nuevas. */
-static void sincronizar_reinicio(Tienda *t)
-{
-    for (int i = 0; i < t->cantidad && !atomic_load(&terminar); i++) {
-        const Par *p = &t->pares[i];
-        char respuesta[LINEA], sobra[2];
-        size_t cantidad;
-        if (!pedir(p->host, p->puerto, "REGISTROS\n", respuesta) ||
-            strncmp(respuesta, "REGISTROS ", 10) != 0 ||
-            !isdigit((unsigned char)respuesta[10]) ||
-            sscanf(respuesta + 10, "%zu %1s", &cantidad, sobra) != 1) continue;
-        /* Pido una cantidad fija para terminar aunque el par siga vendiendo. */
-        for (size_t indice = 0; indice < cantidad && !atomic_load(&terminar); indice++) {
-            Venta v;
-            if (consultar_venta(p, indice, &v) != 1) break;
-            tomar_turno(t, PUBLICADOR);
-            const char *guardada = guardar(t, v, 1);
-            dejar_turno(t, PUBLICADOR);
-            if (strncmp(guardada, "OK ", 3) != 0) break;
-        }
-    }
-    tomar_turno(t, PUBLICADOR);
-    t->sincronizando = false;
-    dejar_turno(t, PUBLICADOR);
-}
-
 static int origen_caido(const Tienda *t, const char *origen)
 {
     if (strcmp(t->id, origen) == 0) return 0;
     int desconocido = 0;
     for (int i = 0; i < t->cantidad; i++) {
         const Par *p = &t->pares[i];
-        if (strcmp(p->id, origen) == 0) return !p->disponible;
-        if (!p->disponible && !*p->id) desconocido = 1;
+        if (strcmp(p->id, origen) == 0) return !p->orden;
+        if (!p->orden && !*p->id) desconocido = 1;
     }
     return desconocido;
+}
+
+/* La dirección identifica al par aunque cambie el archivo de configuración. */
+static const Par *buscar_par(const Par *pares, int cantidad, const Par *buscado)
+{
+    for (int i = 0; i < cantidad; i++) {
+        if (strcmp(pares[i].host, buscado->host) == 0 &&
+            strcmp(pares[i].puerto, buscado->puerto) == 0) return &pares[i];
+    }
+    return NULL;
 }
 
 static int agregar_par(Par **pares, int *cantidad, const char *texto)
@@ -379,10 +304,7 @@ static int agregar_par(Par **pares, int *cantidad, const char *texto)
         return 0;
     memcpy(p.host, texto, (size_t)(dos - texto));
     snprintf(p.puerto, sizeof p.puerto, "%lld", puerto);
-    for (int i = 0; i < *cantidad; i++) {
-        if (strcmp((*pares)[i].host, p.host) == 0 &&
-            strcmp((*pares)[i].puerto, p.puerto) == 0) return 1;
-    }
+    if (buscar_par(*pares, *cantidad, &p)) return 1;
     if (*cantidad == INT_MAX || (size_t)*cantidad >= SIZE_MAX / sizeof p) return 0;
     Par *nuevos = realloc(*pares, ((size_t)*cantidad + 1) * sizeof p);
     if (!nuevos) return 0;
@@ -420,13 +342,8 @@ static int cargar_pares(Tienda *t)
     }
     /* Cambiar la lista no reinicia las entregas de los pares conservados. */
     for (int i = 0; i < cantidad; i++) {
-        for (int j = 0; j < t->cantidad; j++) {
-            if (strcmp(nuevos[i].host, t->pares[j].host) == 0 &&
-                strcmp(nuevos[i].puerto, t->pares[j].puerto) == 0) {
-                nuevos[i] = t->pares[j];
-                break;
-            }
-        }
+        const Par *anterior = buscar_par(t->pares, t->cantidad, &nuevos[i]);
+        if (anterior) nuevos[i] = *anterior;
     }
     free(t->pares);
     t->pares = nuevos;
@@ -440,7 +357,82 @@ static int comparar_orden(const void *a, const void *b)
     return (primero->orden > segundo->orden) - (primero->orden < segundo->orden);
 }
 
-/* Cada par conserva su avance. Confirmar dos veces la misma venta es seguro. */
+/* Busco los pares que responden; los que vuelven se anotan al final. */
+static bool actualizar_pares(Tienda *t)
+{
+    bool hay_corte = false, corte_nuevo = false;
+    for (int i = 0; i < t->cantidad && !atomic_load(&terminar); i++) {
+        Par *p = &t->pares[i];
+        char r[LINEA], id[32];
+        if (!pedir(p->host, p->puerto, "SALUDO\n", r) ||
+            sscanf(r, "SALUDO %31s", id) != 1 || !es_id(id) || strcmp(id, t->id) == 0) {
+            if (p->orden) {
+                printf("%s pierde conexión con %s\n", t->id, p->id);
+                corte_nuevo = true;
+            }
+            p->orden = 0;
+            hay_corte = true;
+            continue;
+        }
+        if (*p->id && strcmp(p->id, id) != 0) {
+            p->enviado = 0;
+            p->consultado = 0;
+            p->orden = 0;
+        }
+        if (!p->orden) {
+            p->orden = ++t->conexiones;
+            printf("%s conecta con %s (orden %llu)\n", t->id, id, p->orden);
+        }
+        strcpy(p->id, id);
+    }
+    if (corte_nuevo) {
+        /* El par que cayó puede haber dejado copias de sus ventas en otros. */
+        for (int i = 0; i < t->cantidad; i++) t->pares[i].consultado = 0;
+    }
+    if (t->cantidad > 1) qsort(t->pares, (size_t)t->cantidad, sizeof *t->pares, comparar_orden);
+    return hay_corte;
+}
+
+/* Al reiniciar leo todas las ventas. Durante el corte filtro las del origen caído.
+ * Devuelvo true cuando el par confirma que llegué al final de su registro. */
+static bool recuperar_ventas(Tienda *t, const Par *p, size_t *indice, size_t cantidad,
+                             bool reinicio)
+{
+    for (size_t i = 0; i < cantidad && !atomic_load(&terminar); i++) {
+        Venta v;
+        int resultado = consultar_venta(p, *indice, &v);
+        if (resultado <= 0) return resultado == 0;
+        if (reinicio || origen_caido(t, v.origen)) {
+            tomar_turno(t, PUBLICADOR);
+            const char *guardada = guardar(t, v, true);
+            dejar_turno(t, PUBLICADOR);
+            if (strncmp(guardada, "OK ", 3) != 0) return false;
+        }
+        (*indice)++;
+    }
+    return false;
+}
+
+/* Al reiniciar, consulto a los pares que responden antes de aceptar compras nuevas. */
+static void sincronizar_reinicio(Tienda *t)
+{
+    for (int i = 0; i < t->cantidad && !atomic_load(&terminar); i++) {
+        const Par *p = &t->pares[i];
+        char respuesta[LINEA], sobra[2];
+        size_t cantidad;
+        if (!pedir(p->host, p->puerto, "REGISTROS\n", respuesta) ||
+            strncmp(respuesta, "REGISTROS ", 10) != 0 ||
+            !isdigit((unsigned char)respuesta[10]) ||
+            sscanf(respuesta + 10, "%zu %1s", &cantidad, sobra) != 1) continue;
+        /* Pido una cantidad fija para terminar aunque el par siga vendiendo. */
+        size_t indice = 0;
+        recuperar_ventas(t, p, &indice, cantidad, true);
+    }
+    tomar_turno(t, PUBLICADOR);
+    t->sincronizando = false;
+    dejar_turno(t, PUBLICADOR);
+}
+
 static void *publicar(void *arg)
 {
     Tienda *t = arg;
@@ -454,40 +446,9 @@ static void *publicar(void *arg)
             ultima_lista = reloj.tv_sec;
             cargar_pares(t);
         }
-        bool hay_corte = false, corte_nuevo = false;
-        for (int i = 0; i < t->cantidad && !atomic_load(&terminar); i++) {
-            Par *p = &t->pares[i];
-            char r[LINEA], id[32];
-            int disponible = pedir(p->host, p->puerto, "SALUDO\n", r) &&
-                             sscanf(r, "SALUDO %31s", id) == 1 && es_id(id) &&
-                             strcmp(id, t->id) != 0;
-            if (disponible) {
-                if (*p->id && strcmp(p->id, id) != 0) {
-                    p->enviado = 0;
-                    p->consultado = 0;
-                    p->disponible = 0;
-                }
-                if (!p->disponible) {
-                    /* Un par que vuelve después de un corte entra al final. */
-                    p->orden = ++t->conexiones;
-                    printf("%s conecta con %s (orden %llu)\n", t->id, id, p->orden);
-                }
-                strcpy(p->id, id);
-            } else {
-                if (p->disponible) {
-                    printf("%s pierde conexión con %s\n", t->id, p->id);
-                    corte_nuevo = true;
-                }
-                p->orden = 0;
-                hay_corte = true;
-            }
-            p->disponible = disponible;
-        }
-        if (corte_nuevo) {
-            /* Revisamos copias anteriores del origen que acaba de apagarse. */
-            for (int i = 0; i < t->cantidad; i++) t->pares[i].consultado = 0;
-        }
-        if (t->cantidad > 1) qsort(t->pares, (size_t)t->cantidad, sizeof *t->pares, comparar_orden);
+        bool hay_corte = actualizar_pares(t);
+
+
         tomar_turno(t, PUBLICADOR);
         size_t limite = t->usadas;
         dejar_turno(t, PUBLICADOR);
@@ -495,7 +456,7 @@ static void *publicar(void *arg)
         bool recuperando = false;
         for (int i = 0; i < t->cantidad && !atomic_load(&terminar); i++) {
             Par *p = &t->pares[i];
-            if (!p->disponible) continue;
+            if (!p->orden) continue;
             for (int paso = 0; paso < 16 && p->enviado < limite && !atomic_load(&terminar); paso++) {
                 tomar_turno(t, PUBLICADOR);
                 Venta v = t->ventas[p->enviado];
@@ -506,24 +467,8 @@ static void *publicar(void *arg)
                 p->enviado++;
             }
             if (p->enviado < confirmado) confirmado = p->enviado;
-            if (!hay_corte) continue;
-            bool fin = false;
-            for (int paso = 0; paso < 16 && !atomic_load(&terminar); paso++) {
-                Venta v;
-                int resultado = consultar_venta(p, p->consultado, &v);
-                if (resultado <= 0) {
-                    fin = resultado == 0;
-                    break;
-                }
-                if (origen_caido(t, v.origen)) {
-                    tomar_turno(t, PUBLICADOR);
-                    const char *respuesta = guardar(t, v, 1);
-                    dejar_turno(t, PUBLICADOR);
-                    if (strncmp(respuesta, "OK ", 3) != 0) break;
-                }
-                p->consultado++;
-            }
-            if (!fin) recuperando = true;
+            if (hay_corte && !recuperar_ventas(t, p, &p->consultado, 16, false))
+                recuperando = true;
         }
         tomar_turno(t, PUBLICADOR);
         t->publicado_hasta = confirmado;
@@ -568,12 +513,12 @@ static void atender(Tienda *t, int fd, int hilo)
             strcpy(v.origen, t->id);
             v.numero = t->numero + 1;
             v.monto = n;
-            respuesta = guardar(t, v, 1);
+            respuesta = guardar(t, v, true);
         }
     } else if (t->en_cadena && strncmp(linea, "DIFUNDE ", 8) == 0 &&
                leer_venta(linea + 8, &v) && strcmp(v.origen, t->id)) {
         /* Una tienda cerrada todavía recibe avisos de ventas que ya se aceptaron. */
-        respuesta = guardar(t, v, 1);
+        respuesta = guardar(t, v, true);
     } else if (t->en_cadena && strcmp(linea, "REGISTROS") == 0) {
         snprintf(r, sizeof r, "REGISTROS %zu\n", t->usadas);
         respuesta = r;
@@ -595,8 +540,7 @@ static void *recibir(void *arg)
 {
     Receptor *r = arg;
     while (!atomic_load(&terminar)) {
-        struct pollfd entrada = {r->escucha, POLLIN, 0};
-        if (poll(&entrada, 1, 250) <= 0) continue;
+        if (esperar_socket(r->escucha, POLLIN, 250) <= 0) continue;
         int otro = accept(r->escucha, NULL, NULL);
         if (otro >= 0) {
             atender(r->tienda, otro, r->hilo);
@@ -666,9 +610,9 @@ static int cliente(int argc, char **argv)
     char orden[LINEA], r[LINEA];
     long long puerto, monto, numero;
     if (argc < 5 || !positivo(argv[3], 65535, &puerto)) return 2;
-    if (argc == 5 && strcmp(argv[4], "ESTADO") == 0) strcpy(orden, "ESTADO\n");
-    else if (argc == 5 && strcmp(argv[4], "PENDIENTES") == 0) strcpy(orden, "PENDIENTES\n");
-    else if (argc == 6 && strcmp(argv[4], "COMPRA") == 0 &&
+    if (argc == 5 && (strcmp(argv[4], "ESTADO") == 0 || strcmp(argv[4], "PENDIENTES") == 0)) {
+        snprintf(orden, sizeof orden, "%s\n", argv[4]);
+    } else if (argc == 6 && strcmp(argv[4], "COMPRA") == 0 &&
              dolares(argv[5], &monto)) {
         snprintf(orden, sizeof orden, "COMPRA %lld\n", monto);
     } else if (argc == 8 && strcmp(argv[4], "DIFUNDE") == 0 && es_id(argv[5]) &&
