@@ -1,44 +1,41 @@
 # BlackOut
 
-## Ejecutar en WSL
+## Demo en Linux
 
-Extrae el ZIP, abre Ubuntu y entra a la carpeta que contiene `demo.sh`. Por ejemplo, si lo extrajiste en Descargas de Windows, cambia el usuario y el nombre de la carpeta por los tuyos.
+Extrae el ZIP y abre una terminal en la carpeta `BlackOut`. Para ejecutar la demostración completa, usa:
 
 ```bash
-cd "/mnt/c/Users/TU_USUARIO/Downloads/BlackOut-referencia/BlackOut"
 bash demo.sh
 ```
 
-Si te falta GCC, instala las herramientas con `sudo apt update` y `sudo apt install build-essential`. Si ya tienes una copia de GitHub, puedes actualizarla con `git pull --ff-only`.
+El comando compila el programa con GCC, inicia las tiendas, genera las compras y muestra el monitor en la misma terminal. Al terminar, detiene los procesos y borra sus archivos temporales.
 
-A, B y C comparten una sola meta de **$100.00**. Cada tienda guarda sus propias ventas y una copia del total de la cadena. D lleva su cuenta aparte y tiene su propia meta. La demo genera compras aleatorias de $7.00 a $16.00, simula un apagón en B y sigue mostrando el total cuando las tiendas activas coinciden. Termina cuando las tiendas activas y D cierran y se procesan los envíos pendientes entre las tiendas activas.
+A, B y C comparten una meta de **$100.00**. D lleva su cuenta aparte. Durante la demo se simula un apagón en B y el monitor muestra el total que confirman las tiendas activas.
 
-```bash
-bash demo.sh cierre            # Las tres tiendas quedan en línea
-bash demo.sh apagon            # Mismo escenario que bash demo.sh
-bash probar_recuperacion.sh    # Prueba de reinicio con montos fijos
-```
+La demo usa Bash y GCC. Si falta GCC en Debian o Ubuntu, se puede instalar con `sudo apt update` y `sudo apt install build-essential`.
 
-La prueba de recuperación reinicia B con el mismo registro. Comprueba que B sigue vendiendo si el total todavía está por debajo de la meta y que rechaza compras si la cadena ya cerró. También prueba una venta de $8.36 que quedó guardada solo en B. A y C cierran con $105.27 y, cuando B vuelve, las tres quedan cerradas con $113.63. Los dos scripts cierran sus procesos y borran los archivos temporales al salir.
+## Pruebas y ajustes opcionales
 
-## Opciones de la demo
+- `bash demo.sh cierre` ejecuta la demo con las tres tiendas de la cadena en línea.
+- `bash probar_recuperacion.sh` reinicia B con el mismo registro y verifica con montos fijos qué pasa antes y después del cierre de la cadena.
 
 | Variable | Valor por defecto | Para qué sirve |
 | --- | --- | --- |
-| `BLACKOUT_PUERTO_BASE` | `18080` | Primer puerto de cuatro consecutivos. |
+| `BLACKOUT_PUERTO_BASE` | `18080` | Primer puerto de cuatro consecutivos en la demo. |
 | `BLACKOUT_DURACION` | `30` | Tiempo máximo en segundos. |
 | `BLACKOUT_META` | `100.00` | Meta en dólares de la cadena y meta separada de D. |
 | `BLACKOUT_APAGON_EN` | `1` | Segundo en que se apaga B. |
 | `BLACKOUT_MOSTRAR_REGISTROS` | `0` | Con `1` muestra conexiones y ventas registradas al final. |
 
+Por ejemplo, para simular el apagón en el segundo 2 y ver los registros:
+
 ```bash
 BLACKOUT_APAGON_EN=2 BLACKOUT_MOSTRAR_REGISTROS=1 bash demo.sh
-BLACKOUT_PUERTO_BASE=19100 bash probar_recuperacion.sh
 ```
 
-## Usar el programa a mano
+## Ejecución manual opcional
 
-Compila en la carpeta `BlackOut`.
+Para iniciar las tiendas una por una, compila en la carpeta `BlackOut`.
 
 ```bash
 gcc -std=c11 -Wall -Wextra -Werror -pthread blackout.c -o blackout
