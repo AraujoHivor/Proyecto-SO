@@ -1,55 +1,64 @@
-# BlackOut · referencia de estudio
+# BlackOut
 
-Esta referencia se preparó con IA para practicar los conceptos del proyecto. La rúbrica del curso excluye el código generado por IA de la entrega.
+## Ejecutar en WSL
 
-## Ejecutar desde el ZIP
-
-Extrae el ZIP, abre una terminal en la carpeta `BlackOut` y ejecuta:
+Extrae el ZIP, abre Ubuntu y entra a la carpeta que contiene `demo.sh`. Por ejemplo, si lo extrajiste en Descargas de Windows, cambia el usuario y el nombre de la carpeta por los tuyos.
 
 ```bash
+cd "/mnt/c/Users/TU_USUARIO/Downloads/BlackOut-referencia/BlackOut"
 bash demo.sh
 ```
 
-En Ubuntu o WSL, la demo usa Bash y GCC. Si te falta el compilador, instala `build-essential` con `sudo apt install build-essential`. También puedes usar una copia de GitHub. Si ya la clonaste, ejecuta `git pull --ff-only` en la carpeta antes de correr el script.
+Si te falta GCC, instala las herramientas con `sudo apt update` y `sudo apt install build-essential`. Si ya tienes una copia de GitHub, puedes actualizarla con `git pull --ff-only`.
 
-El script compila con GCC, abre las tiendas y arranca los compradores. A, B y C pertenecen a la misma cadena. **Entre las tres deben alcanzar $100.00 en total.** Si A vendió $40, B $35 y C $25, el total de la cadena es $100. Cada tienda guarda una copia de ese mismo total. D es independiente: usa sus propias ventas para llegar a su meta.
-
-Cada tienda recibe compradores por separado. Para cada compra, el simulador elige un tiempo de espera de 0,30 a 1,10 segundos y un monto de $7.00 a $16.00. El enunciado menciona un generador que se entregaría aparte. La demo incluye uno sencillo para poder correr sin ese archivo.
-
-En la ejecución normal se simula un apagón en B. A y C pueden seguir vendiendo hasta que conocen que la cadena alcanzó la meta. El monitor muestra las ventas propias por tienda y un solo total de la cadena cuando las copias de las tiendas activas coinciden. D continúa hasta alcanzar su meta por separado. El script termina los procesos cuando observa los cierres y confirma que se procesaron los envíos pendientes entre las tiendas activas.
-
-Para repetir la prueba con las tres tiendas en línea, usa `bash demo.sh cierre`. El comando `bash demo.sh apagon` repite el mismo escenario que se ejecuta por defecto. Los escenarios son opciones del mismo script.
-
-La demo usa cuatro puertos desde el 18080, espera como máximo 30 segundos y simula el apagón al primer segundo. Al salir libera los procesos y borra sus archivos temporales. Puedes cambiar estos parámetros. Con `BLACKOUT_MOSTRAR_REGISTROS=1` puedes ver el orden de conexión y las ventas registradas.
+A, B y C comparten una sola meta de **$100.00**. Cada tienda guarda sus propias ventas y una copia del total de la cadena. D lleva su cuenta aparte y tiene su propia meta. La demo genera compras aleatorias de $7.00 a $16.00, simula un apagón en B y sigue mostrando el total cuando las tiendas activas coinciden. Termina cuando las tiendas activas y D cierran y se procesan los envíos pendientes entre las tiendas activas.
 
 ```bash
-BLACKOUT_PUERTO_BASE=18100 BLACKOUT_DURACION=25 BLACKOUT_META=100.00 \
-  BLACKOUT_APAGON_EN=2 BLACKOUT_MOSTRAR_REGISTROS=1 bash demo.sh
+bash demo.sh cierre            # Las tres tiendas quedan en línea
+bash demo.sh apagon            # Mismo escenario que bash demo.sh
+bash probar_recuperacion.sh    # Prueba de reinicio con montos fijos
 ```
 
-## Compilar y consultar a mano
+La prueba de recuperación reinicia B con el mismo registro. Comprueba que B sigue vendiendo si el total todavía está por debajo de la meta y que rechaza compras si la cadena ya cerró. También prueba una venta de $8.36 que quedó guardada solo en B. A y C cierran con $105.27 y, cuando B vuelve, las tres quedan cerradas con $113.63. Los dos scripts cierran sus procesos y borran los archivos temporales al salir.
 
-El siguiente comando crea el ejecutable `blackout`. El mismo ejecutable tiene dos modos, `tienda` y `cliente`.
+## Opciones de la demo
+
+| Variable | Valor por defecto | Para qué sirve |
+| --- | --- | --- |
+| `BLACKOUT_PUERTO_BASE` | `18080` | Primer puerto de cuatro consecutivos. |
+| `BLACKOUT_DURACION` | `30` | Tiempo máximo en segundos. |
+| `BLACKOUT_META` | `100.00` | Meta en dólares de la cadena y meta separada de D. |
+| `BLACKOUT_APAGON_EN` | `1` | Segundo en que se apaga B. |
+| `BLACKOUT_MOSTRAR_REGISTROS` | `0` | Con `1` muestra conexiones y ventas registradas al final. |
+
+```bash
+BLACKOUT_APAGON_EN=2 BLACKOUT_MOSTRAR_REGISTROS=1 bash demo.sh
+BLACKOUT_PUERTO_BASE=19100 bash probar_recuperacion.sh
+```
+
+## Usar el programa a mano
+
+Compila en la carpeta `BlackOut`.
 
 ```bash
 gcc -std=c11 -Wall -Wextra -Werror -pthread blackout.c -o blackout
 ```
 
-Una tienda recibe un ID único de hasta 31 caracteres (letras, números, guion o guion bajo), un puerto entre 1 y 65535, una meta en dólares y la ruta de su registro. Usa un puerto libre y un registro distinto para cada proceso. Una compra válida tiene un importe positivo de hasta dos decimales. Una solicitud inválida se rechaza y la tienda puede seguir recibiendo otras.
+El modo `tienda` recibe el ID, un puerto libre, la meta en dólares, el archivo de ventas y las direcciones de sus pares. Usa un ID distinto para cada tienda, de hasta 31 caracteres, con letras, números, guion o guion bajo. Cada proceso necesita su propio archivo de ventas.
 
-En una terminal, inicia A con B como única par, una meta de $100.00 y el archivo `ventas-A.log`.
+En una terminal, inicia A con la dirección de B.
 
 ```bash
 ./blackout tienda A 18080 100.00 ventas-A.log 127.0.0.1:18081
 ```
 
-En otra terminal, inicia B con la misma meta y la dirección de A.
+En otra terminal, inicia B con la dirección de A.
 
 ```bash
 ./blackout tienda B 18081 100.00 ventas-B.log 127.0.0.1:18080
 ```
 
-En una tercera terminal, registra una compra de $7.50 en A y consulta ambas tiendas.
+El modo `cliente` recibe el host, el puerto y la solicitud. En una tercera terminal, registra $7.50 en A y consulta las dos tiendas.
 
 ```bash
 ./blackout cliente 127.0.0.1 18080 COMPRA 7.50
@@ -57,48 +66,16 @@ En una tercera terminal, registra una compra de $7.50 en A y consulta ambas tien
 ./blackout cliente 127.0.0.1 18081 ESTADO
 ```
 
-Si ambas empezaron en cero, A muestra `ESTADO A ABIERTA $7.50 $7.50`. Cuando B recibe la venta, muestra `ESTADO B ABIERTA $0.00 $7.50`. Los dos últimos campos son las ventas propias y el total de la cadena. Si B aún muestra $0.00 en ambos campos, consulta de nuevo tras un momento. Los importes por consola admiten hasta dos decimales. Si escribes el signo de dólar, usa comillas simples, por ejemplo `COMPRA '$7.50'`. El programa guarda centavos enteros internamente para sumar con exactitud.
+Los últimos dos campos de `ESTADO` son las ventas propias y el total. Con registros vacíos, A muestra `ESTADO A ABIERTA $7.50 $7.50`. B muestra `ESTADO B ABIERTA $0.00 $7.50` después de recibir la venta. Usa importes positivos de hasta dos decimales. Si escribes el signo de dólar, usa comillas simples, como en `COMPRA '$7.50'`.
 
-Omite las direcciones de pares para iniciar una tienda independiente. Usa direcciones alcanzables entre las tiendas si las ejecutas en equipos distintos. Para modificar la lista de pares durante la ejecución, usa un archivo precedido por `@`.
+Inicia una tienda independiente dejando el comando hasta el archivo de ventas. Para cambiar los pares de una tienda de cadena mientras se ejecuta, pasa `@pares-A.txt` en lugar de las direcciones. El archivo admite un `HOST:PUERTO` por línea, líneas vacías y comentarios con `#`. La tienda lo vuelve a leer aproximadamente cada segundo.
 
-```bash
-printf '%s\n' '127.0.0.1:18081' > pares-A.txt
-./blackout tienda A 18080 100.00 ventas-A.log @pares-A.txt
-```
-
-El archivo admite un `HOST:PUERTO` por línea, líneas vacías y comentarios que empiezan con `#`. La tienda revisa el archivo aproximadamente cada segundo. Un archivo vacío permite arrancar una tienda de cadena antes de agregar sus pares.
-
-## Recuperar una tienda después del corte
-
-El escenario predeterminado mantiene a B apagada hasta el final. Para verificar un regreso sin depender de las compras aleatorias, usa:
-
-```bash
-bash probar_recuperacion.sh
-```
-
-La prueba usa montos fijos y registros temporales:
-
-1. B conserva sus $20.00 de ventas propias, recupera el total de $70.00 y acepta una compra más.
-2. La cadena alcanza $100.00 mientras B está fuera. Al volver, B se pone al día y rechaza una compra.
-3. B guarda $8.36 y se apaga antes de compartirlos. A y C cierran con $105.27. Cuando B vuelve con su registro, las tres tiendas llegan a $113.63.
-
-En cada caso se comprueban los estados y los importes esperados. Al salir se detienen las tiendas y se borran los archivos de la prueba.
-
-En la demo predeterminada B permanece apagada hasta que termina esa corrida. Para probar un reinicio, inicia las tiendas a mano como en el ejemplo anterior. Detén B, deja a A ejecutándose y vuelve a lanzar B con el mismo identificador, puerto y archivo `ventas-B.log`. Guarda el archivo entre los dos arranques.
-
-B recupera sus propias ventas del archivo y consulta ventas individuales en las tiendas que responden. Mientras las carga, el estado puede aparecer como `RECUPERANDO` y B rechaza compras nuevas. Si el total que recuperó sigue por debajo de $100, vuelve a atender. Si la cadena ya alcanzó la meta según los registros disponibles, B queda cerrada. Si ninguna otra tienda responde, B solo dispone de su copia local hasta que se restablezca la conexión.
-
-Para darle a B más tiempo para recibir compradores antes del apagón simulado, ejecuta `BLACKOUT_APAGON_EN=2 bash demo.sh`. El momento de cada compra sigue siendo aleatorio. Con `bash demo.sh cierre` puedes hacer la prueba con B en línea.
+Para probar el reinicio manualmente, apaga B y vuelve a usar su comando con el mismo ID, puerto y archivo de ventas. Deja A en ejecución para que B pueda recuperar lo que le falta.
 
 ## Cómo funciona
 
-- Cada tienda corre en un proceso. Los sockets TCP, como en los demos de cliente y servidor de clase, conectan a compradores, tiendas y monitor. El monitor solo consulta; una tienda puede vender aunque el monitor esté desconectado.
-- Los pares se identifican con `SALUDO`. Intercambian ventas individuales identificadas por origen y número de secuencia, y cada tienda suma el total en su propio registro. El comando `ESTADO` es para el monitor. `PENDIENTES` permite seguir el vaciado de envíos durante la demo.
-- El origen registra primero su venta. En la difusión inicial, el publicador visita a los pares en el orden de conexión y espera la confirmación o el tiempo límite de cada intento. Si un par no responde, sigue con los demás y deja su envío pendiente. Dos tiendas que venden al mismo tiempo pueden tener sus avisos intercalados. Un par que vuelve entra al final del orden activo. En la recuperación se leen los registros disponibles.
-- En las tiendas de cadena, dos hilos manejan solicitudes TCP y un tercero publica ventas. Bakery de Lamport protege el registro: cada hilo anuncia que elige, toma un número, desempata por identificador y pone su turno en cero al salir. Las esperas de red quedan fuera de esa sección. La escritura y el `fsync()` se hacen dentro del turno para que el registro y los totales avancen juntos. Una escritura lenta puede retrasar otra actualización local.
-- Si un par vuelve, recibe las ventas que se le debían. Si el origen se apaga, las tiendas activas pueden recuperar las copias que otra alcanzó a registrar. La combinación de origen y número evita duplicados. Si la única copia queda en el equipo apagado, se recupera cuando ese equipo vuelva con su archivo.
-- Cada tienda deja de vender cuando su copia del total alcanza la meta. Si dos tiendas aceptan compras simultáneas a partir de copias atrasadas, ambas ventas válidas se registran y el total puede superar $100. Los totales pueden diferir mientras haya una desconexión. En WSL el corte de luz se simula con `SIGKILL`. El cierre por meta permite responder consultas y descargar lo pendiente antes de que el script termine los procesos.
-
-## Qué se confirma
-
-La tienda responde `OK REGISTRADA` después de completar la escritura y sincronizar el archivo local. Una confirmación de otra tienda acredita ese mismo paso en esa tienda. Durante el corte, `PENDIENTES 0` se refiere a las tiendas que responden. Las copias almacenadas únicamente en un equipo apagado se recuperan cuando ese equipo vuelve con su registro.
+- **Procesos y sockets.** Cada tienda es un proceso. Las tiendas y sus clientes se conectan por TCP. Las tiendas se mandan ventas individuales, con tienda de origen, número y monto. Cada tienda suma sus copias en centavos enteros.
+- **Hilos y orden.** Dos hilos atienden solicitudes y otro publica en las tiendas de cadena. La tienda de origen guarda la venta primero. Para cada tienda de origen, el publicador intenta enviar a sus pares en el orden en que se conectaron. Espera la confirmación de cada uno o el tiempo límite antes de pasar al siguiente. Si un par vuelve, queda al final del orden activo.
+- **Bakery de Lamport.** Cada hilo elige un boleto mayor que los que ve y espera a que le toque. Si dos eligen el mismo número, va primero el hilo de menor índice. Al salir deja su boleto en cero. La espera por la red queda fuera del turno. El turno cubre la escritura con `fsync()` y la actualización del total. `OK REGISTRADA` se envía después de soltar el turno.
+- **Apagón y recuperación.** El apagón se simula con `SIGKILL`. Al volver, la tienda carga su archivo y consulta ventas de los pares que responden. Puede aparecer como `RECUPERANDO` y rechazar compras mientras se pone al día. El origen y el número identifican cada venta y evitan sumarla dos veces. Si una venta quedó guardada solo en el equipo apagado, se incorpora cuando ese equipo vuelve con su archivo.
+- **Cierre.** Cada tienda deja de aceptar compras cuando su copia del total alcanza la meta. Las ventas ya aceptadas pueden llevar el total por encima de $100.00. El proceso puede responder a consultas y recibir ventas pendientes hasta que termina la demo. `PENDIENTES 0` se refiere a los pares que responden.

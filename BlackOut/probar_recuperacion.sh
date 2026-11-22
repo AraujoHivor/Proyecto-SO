@@ -63,6 +63,7 @@ iniciar() {
 cliente() {
     local tienda=$1
     shift
+    # Si un proceso no responde, la prueba sigue hasta dar un error con contexto.
     timeout --kill-after=1s 2s "$binario" cliente "$host" "${puertos[$tienda]}" "$@"
 }
 
@@ -89,6 +90,7 @@ comprar() {
 }
 
 apagar_b() {
+    # Detenemos el proceso de golpe pero conservamos su archivo para reiniciarlo.
     kill -KILL "${procesos[B]}" || fallar 'No se pudo simular el apagón de B.'
     wait "${procesos[B]}" 2>/dev/null || true
     unset 'procesos[B]'

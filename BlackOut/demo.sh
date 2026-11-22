@@ -146,6 +146,7 @@ consultar_tiendas() {
             fi
         fi
     done
+    # Las tiendas activas consultadas tienen copias. Muestro un total cuando coinciden.
     total_cadena=
     if (( coincide )) && [[ -n $referencia ]]; then
         total_cadena=$referencia
@@ -172,6 +173,7 @@ ejecutar_comprador() {
     local indice=$1 demora pausa centavos monto respuesta detener_tienda
     detener_tienda=$temporal/detener-${ids[indice]}
     while [[ ! -e $detener && ! -e $detener_tienda ]]; do
+        # El tiempo de llegada y el monto se eligen por separado.
         demora=$((300 + RANDOM % 801))
         printf -v pausa '%d.%03d' "$((demora / 1000))" "$((demora % 1000))"
         sleep "$pausa"
@@ -206,6 +208,7 @@ for indice in "${!ids[@]}"; do
     simuladores+=("$!")
 done
 
+# Confirmo el cierre de la cadena en dos consultas seguidas antes de terminar.
 cierre_anterior=
 cierre_anunciado=0
 while true; do

@@ -36,18 +36,19 @@ static void pedir_cierre(int senal)
 
 typedef struct {
     char origen[32];
-    long long numero, monto;
+    long long numero, monto; /* El monto va en centavos. Origen y número identifican la venta. */
 } Venta;
 
 typedef struct {
     char host[128], puerto[6], id[32];
     int disponible;
-    size_t enviado, consultado;
+    size_t enviado, consultado; /* Hasta dónde le enviamos y hasta dónde leímos. */
     unsigned long long orden;
 } Par;
 
 typedef struct {
     char id[32];
+    /* Propio suma las ventas de esta tienda. Total incluye las de su cadena. */
     long long meta, propio, total, numero;
     int archivo, cantidad;
     bool en_cadena, registro_danado;
@@ -110,9 +111,10 @@ static int es_id(const char *s)
     return 1;
 }
 
-/* Bakery de Lamport. El ID del hilo desempata dos boletos iguales. */
+/* Bakery de Lamport da acceso al registro a un hilo a la vez. */
 static void tomar_turno(Tienda *t, int hilo)
 {
+    /* Aviso que estoy eligiendo. El boleto vale uno más que el mayor que veo. */
     atomic_store(&t->eligiendo[hilo], true);
     unsigned long long maximo = 0;
     for (int i = 0; i < HILOS; i++) {
@@ -125,6 +127,7 @@ static void tomar_turno(Tienda *t, int hilo)
 
     for (int i = 0; i < HILOS; i++) {
         if (i == hilo) continue;
+        /* Espero a que el otro termine de elegir. Si empatamos, va primero el ID menor. */
         while (atomic_load(&t->eligiendo[i])) sched_yield();
         for (;;) {
             unsigned long long otro = atomic_load(&t->boleto[i]);
@@ -136,9 +139,11 @@ static void tomar_turno(Tienda *t, int hilo)
 
 static void dejar_turno(Tienda *t, int hilo)
 {
+    /* Con cero, los demás saben que este hilo ya dejó el turno. */
     atomic_store(&t->boleto[hilo], 0);
 }
 
+/* TCP entrega un flujo de bytes. El salto de línea marca el final del mensaje. */
 static int mensaje(int fd, char linea[LINEA])
 {
     struct timespec inicio, ahora;
@@ -235,6 +240,7 @@ static int leer_venta(const char *linea, Venta *v)
 static const char *guardar(Tienda *t, Venta v, int disco)
 {
     if (disco && t->registro_danado) return "ERROR REGISTRO\n";
+    /* Si se perdió una confirmación, el par puede mandar la misma venta de nuevo. */
     for (size_t i = 0; i < t->usadas; i++) {
         Venta anterior = t->ventas[i];
         if (anterior.numero == v.numero && strcmp(anterior.origen, v.origen) == 0) {
@@ -256,8 +262,9 @@ static const char *guardar(Tienda *t, Venta v, int disco)
         if (n <= 0 || (size_t)n >= sizeof fila) return "ERROR REGISTRO\n";
         off_t previo = lseek(t->archivo, 0, SEEK_END);
         if (previo < 0) return "ERROR REGISTRO\n";
-        /* El saldo cambia solo cuando la línea completa ya está en disco. */
+        /* Primero guardo y sincronizo la línea. Solo después cambio los totales. */
         if (!escribir(t->archivo, fila, (size_t)n, false) || !confirmar_archivo(t->archivo)) {
+            /* Si quedó una escritura a medias, intento volver al final anterior. */
             if (ftruncate(t->archivo, previo) != 0 || !confirmar_archivo(t->archivo)) {
                 t->registro_danado = true;
                 fprintf(stderr, "%s: no se pudo restaurar el registro de ventas\n", t->id);
@@ -294,6 +301,7 @@ static int abrir_registro(Tienda *t, const char *ruta)
                  ftruncate(fileno(f), inicio) == 0 && confirmar_archivo(fileno(f));
             break;
         }
+        /* Al arrancar reconstruyo los totales con las líneas que ya están guardadas. */
         if (!leer_venta(linea, &v) || strncmp(guardar(t, v, 0), "OK", 2)) {
             ok = 0;
             break;
@@ -323,7 +331,7 @@ static int consultar_venta(const Par *p, size_t indice, Venta *v)
     return 1;
 }
 
-/* Al volver del corte, retoma un tramo acotado de cada registro alcanzable. */
+/* Al reiniciar, consulto a los pares que responden antes de aceptar compras nuevas. */
 static void sincronizar_reinicio(Tienda *t)
 {
     for (int i = 0; i < t->cantidad && !atomic_load(&terminar); i++) {
@@ -334,6 +342,7 @@ static void sincronizar_reinicio(Tienda *t)
             strncmp(respuesta, "REGISTROS ", 10) != 0 ||
             !isdigit((unsigned char)respuesta[10]) ||
             sscanf(respuesta + 10, "%zu %1s", &cantidad, sobra) != 1) continue;
+        /* Pido una cantidad fija para terminar aunque el par siga vendiendo. */
         for (size_t indice = 0; indice < cantidad && !atomic_load(&terminar); indice++) {
             Venta v;
             if (consultar_venta(p, indice, &v) != 1) break;
@@ -459,6 +468,7 @@ static void *publicar(void *arg)
                     p->disponible = 0;
                 }
                 if (!p->disponible) {
+                    /* Un par que vuelve después de un corte entra al final. */
                     p->orden = ++t->conexiones;
                     printf("%s conecta con %s (orden %llu)\n", t->id, id, p->orden);
                 }
@@ -489,8 +499,9 @@ static void *publicar(void *arg)
             for (int paso = 0; paso < 16 && p->enviado < limite && !atomic_load(&terminar); paso++) {
                 tomar_turno(t, PUBLICADOR);
                 Venta v = t->ventas[p->enviado];
+                /* Con la venta copiada ya puedo soltar el turno antes de usar la red. */
                 dejar_turno(t, PUBLICADOR);
-                /* Sin el OK del par, dejamos esta venta para el siguiente intento. */
+                /* Difundo las ventas propias. Si el par no da el OK, reintento más tarde. */
                 if (strcmp(v.origen, t->id) == 0 && !enviar_venta(p, &v)) break;
                 p->enviado++;
             }
@@ -549,6 +560,7 @@ static void atender(Tienda *t, int fd, int hilo)
         snprintf(r, sizeof r, "PENDIENTES %zu\n", pendientes);
         respuesta = r;
     } else if (strncmp(linea, "COMPRA ", 7) == 0 && positivo(linea + 7, LLONG_MAX, &n)) {
+        /* Cada tienda decide el cierre con las ventas que ya tiene registradas. */
         if (t->total >= t->meta) respuesta = "ERROR CERRADA\n";
         else if (t->sincronizando) respuesta = "ERROR RECUPERANDO\n";
         else if (t->numero == LLONG_MAX) respuesta = "ERROR SECUENCIA\n";
@@ -560,6 +572,7 @@ static void atender(Tienda *t, int fd, int hilo)
         }
     } else if (t->en_cadena && strncmp(linea, "DIFUNDE ", 8) == 0 &&
                leer_venta(linea + 8, &v) && strcmp(v.origen, t->id)) {
+        /* Una tienda cerrada todavía recibe avisos de ventas que ya se aceptaron. */
         respuesta = guardar(t, v, 1);
     } else if (t->en_cadena && strcmp(linea, "REGISTROS") == 0) {
         snprintf(r, sizeof r, "REGISTROS %zu\n", t->usadas);
