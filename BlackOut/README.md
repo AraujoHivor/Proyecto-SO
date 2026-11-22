@@ -23,7 +23,7 @@ Los compradores de la demo corren como procesos de Bash. Dentro de una tienda, l
 ## Pruebas opcionales
 
 - `bash demo.sh cierre` muestra el cierre con las tres tiendas de la cadena en línea.
-- `bash probar_recuperacion.sh` prueba el regreso de B con el mismo registro. Uno de los casos deja $8.36 guardados solo en B. A y C cierran con $105.27 y, cuando B vuelve, las tres muestran $113.63.
+- `bash probar_recuperacion.sh` prueba el regreso de B con el mismo registro. Uno de los casos deja $8.36 guardados solo en B. B queda en `RECUPERANDO` si reinicia sola. A y C cierran con $105.27 y, cuando B vuelve a conectarse, las tres muestran $113.63.
 
 ### Ajustes de la demo
 
@@ -80,8 +80,8 @@ Para probar el reinicio manualmente, apaga B y vuelve a usar su comando con el m
 ## El recorrido de una venta
 
 1. **Recibir.** En `atender()` llega el pedido `COMPRA` por TCP. La tienda revisa el monto y si aún puede vender. En `red.h` están las funciones que abren el socket y leen los mensajes.
-2. **Guardar.** En `guardar()` se comprueba el identificador de la venta, se guarda en el archivo con `fsync()` y se suma el monto. Bakery da un turno a cada hilo para que solo uno cambie el registro a la vez. Si dos hilos toman el mismo boleto, va primero el de menor índice. Al salir, deja su boleto en cero.
-3. **Compartir.** En `publicar()`, el hilo toma una copia de la venta, suelta el turno y la envía por TCP. Intenta llegar a los pares en orden de conexión y espera cada confirmación o su tiempo límite. Cada tienda suma lo que recibe. El origen y el número de venta permiten reconocer y descartar duplicados.
-4. **Recuperar.** Al volver de un apagón, la tienda abre su archivo y usa `recuperar_ventas()` para leer las ventas de los pares que responden. Si la única copia quedó en el equipo apagado, se suma cuando ese equipo vuelve con su archivo.
+2. **Guardar.** En `guardar()` se comprueba el identificador de la venta, se guarda en el archivo con `fsync()` y se suma el monto. Bakery da un turno a cada hilo para que solo uno cambie el registro a la vez. Si el disco tarda, los otros hilos esperan ese turno. La espera por la red queda fuera. Si dos hilos toman el mismo boleto, va primero el de menor índice. Al salir, deja su boleto en cero.
+3. **Compartir.** En `publicar()`, el hilo toma una copia de la venta, suelta el turno y la envía por TCP. Cada origen envía a sus pares en el orden de conexión y espera cada confirmación o su tiempo límite. Si varias tiendas venden a la vez, sus avisos pueden llegar intercalados. Cada tienda suma lo que recibe. El origen y el número de venta permiten reconocer y descartar duplicados.
+4. **Recuperar.** Al reiniciar con su archivo, la tienda consulta a los pares que responden. Para volver a aceptar compras necesita leer el registro anunciado de al menos uno y terminar la lectura de los demás que respondieron en esa vuelta. Si nadie responde o se corta una lectura, sigue en `RECUPERANDO` y reintenta. Las copias que quedaron en equipos aislados se incorporan cuando esos equipos vuelven.
 
-Cada tienda de cadena tiene dos hilos para atender solicitudes y otro para publicar. La tienda deja de aceptar compras cuando su total llega a la meta. Las ventas que ya se aceptaron pueden hacer que lo supere. La demo simula el apagón con `SIGKILL` y permite terminar los envíos entre las tiendas activas.
+Cada tienda de cadena tiene dos hilos para atender solicitudes y otro para publicar. La tienda deja de aceptar compras cuando su copia del total llega a la meta. Si va en $95 y entra una compra de $14, registra la compra completa y cierra con $109. En la cadena también pueden llegar ventas pendientes de otras tiendas. La demo simula el apagón con `SIGKILL` y permite terminar los envíos entre las tiendas activas.

@@ -50,8 +50,8 @@ static int abrir_socket(const char *host, const char *puerto)
     bool ok = fd >= 0 && fcntl(fd, F_SETFL, O_NONBLOCK) == 0;
     if (ok && !host) {
         int si = 1;
-        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &si, sizeof si);
-        ok = bind(fd, a->ai_addr, a->ai_addrlen) == 0 && listen(fd, 20) == 0;
+        ok = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &si, sizeof si) == 0 &&
+             bind(fd, a->ai_addr, a->ai_addrlen) == 0 && listen(fd, 20) == 0;
     } else if (ok && connect(fd, a->ai_addr, a->ai_addrlen) != 0) {
         int error;
         socklen_t tam = sizeof error;

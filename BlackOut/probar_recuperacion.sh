@@ -164,6 +164,12 @@ comprar B 8.36
 esperar_estado B 'ABIERTA $8.36 $8.36'
 apagar_b
 
+iniciar B A C
+esperar_estado B 'RECUPERANDO $8.36 $8.36'
+comprar B 1.00 'ERROR RECUPERANDO'
+esperar_estado B 'RECUPERANDO $8.36 $8.36'
+apagar_b
+
 iniciar A B C
 iniciar C A B
 esperar_estado A 'ABIERTA $0.00 $0.00'

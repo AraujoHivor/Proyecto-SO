@@ -17,6 +17,9 @@
 
 #include "red.h"
 
+/* En cada vuelta se atienden hasta 16 ventas por par antes de pasar al siguiente. */
+#define LOTE 16
+
 enum { RECEPTOR, AUXILIAR, PUBLICADOR, HILOS };
 
 _Static_assert(ATOMIC_BOOL_LOCK_FREE == 2, "Se requiere un indicador atómico sin bloqueo");
@@ -416,21 +419,27 @@ static bool recuperar_ventas(Tienda *t, const Par *p, size_t *indice, size_t can
 /* Al reiniciar, consulto a los pares que responden antes de aceptar compras nuevas. */
 static void sincronizar_reinicio(Tienda *t)
 {
+    bool leyo_un_par = false;
     for (int i = 0; i < t->cantidad && !atomic_load(&terminar); i++) {
         const Par *p = &t->pares[i];
+        if (!p->orden) continue;
         char respuesta[LINEA], sobra[2];
         size_t cantidad;
         if (!pedir(p->host, p->puerto, "REGISTROS\n", respuesta) ||
             strncmp(respuesta, "REGISTROS ", 10) != 0 ||
             !isdigit((unsigned char)respuesta[10]) ||
-            sscanf(respuesta + 10, "%zu %1s", &cantidad, sobra) != 1) continue;
-        /* Pido una cantidad fija para terminar aunque el par siga vendiendo. */
+            sscanf(respuesta + 10, "%zu %1s", &cantidad, sobra) != 1) return;
+        /* Si faltó alguna fila, la siguiente vuelta vuelve a intentar la recuperación. */
         size_t indice = 0;
         recuperar_ventas(t, p, &indice, cantidad, true);
+        if (indice != cantidad) return;
+        leyo_un_par = true;
     }
-    tomar_turno(t, PUBLICADOR);
-    t->sincronizando = false;
-    dejar_turno(t, PUBLICADOR);
+    if (leyo_un_par) {
+        tomar_turno(t, PUBLICADOR);
+        t->sincronizando = false;
+        dejar_turno(t, PUBLICADOR);
+    }
 }
 
 static void *publicar(void *arg)
@@ -438,7 +447,6 @@ static void *publicar(void *arg)
     Tienda *t = arg;
     const struct timespec espera = {0, 100000000};
     time_t ultima_lista = (time_t)-1;
-    if (t->sincronizando) sincronizar_reinicio(t);
     while (!atomic_load(&terminar)) {
         struct timespec reloj;
         if (t->lista && clock_gettime(CLOCK_MONOTONIC, &reloj) == 0 &&
@@ -447,7 +455,7 @@ static void *publicar(void *arg)
             cargar_pares(t);
         }
         bool hay_corte = actualizar_pares(t);
-
+        if (t->sincronizando) sincronizar_reinicio(t);
 
         tomar_turno(t, PUBLICADOR);
         size_t limite = t->usadas;
@@ -457,7 +465,7 @@ static void *publicar(void *arg)
         for (int i = 0; i < t->cantidad && !atomic_load(&terminar); i++) {
             Par *p = &t->pares[i];
             if (!p->orden) continue;
-            for (int paso = 0; paso < 16 && p->enviado < limite && !atomic_load(&terminar); paso++) {
+            for (int paso = 0; paso < LOTE && p->enviado < limite && !atomic_load(&terminar); paso++) {
                 tomar_turno(t, PUBLICADOR);
                 Venta v = t->ventas[p->enviado];
                 /* Con la venta copiada ya puedo soltar el turno antes de usar la red. */
@@ -467,7 +475,7 @@ static void *publicar(void *arg)
                 p->enviado++;
             }
             if (p->enviado < confirmado) confirmado = p->enviado;
-            if (hay_corte && !recuperar_ventas(t, p, &p->consultado, 16, false))
+            if (hay_corte && !recuperar_ventas(t, p, &p->consultado, LOTE, false))
                 recuperando = true;
         }
         tomar_turno(t, PUBLICADOR);
