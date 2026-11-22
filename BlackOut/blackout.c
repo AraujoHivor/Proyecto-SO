@@ -50,7 +50,7 @@ typedef struct {
     char id[32];
     long long meta, propio, total, numero;
     int archivo, cantidad;
-    bool en_cadena;
+    bool en_cadena, registro_danado;
     const char *lista;
     unsigned long long conexiones;
     Par *pares;
@@ -158,17 +158,31 @@ static int mensaje(int fd, char linea[LINEA])
     return 0;
 }
 
-static int escribir(int fd, const char *s, size_t n)
+static int escribir(int fd, const char *s, size_t n, bool por_red)
 {
     while (n) {
-        struct pollfd p = {fd, POLLOUT, 0};
-        if (poll(&p, 1, ESPERA) <= 0) return 0;
+        if (por_red) {
+            struct pollfd p = {fd, POLLOUT, 0};
+            int listo = poll(&p, 1, ESPERA);
+            if (listo < 0 && errno == EINTR && !atomic_load(&terminar)) continue;
+            if (listo <= 0) return 0;
+        }
         ssize_t escritos = write(fd, s, n);
+        if (escritos < 0 && errno == EINTR) continue;
         if (escritos <= 0) return 0;
         s += escritos;
         n -= (size_t)escritos;
     }
     return 1;
+}
+
+static int confirmar_archivo(int fd)
+{
+    int resultado;
+    do {
+        resultado = fsync(fd);
+    } while (resultado < 0 && errno == EINTR);
+    return resultado == 0;
 }
 
 static int abrir_socket(const char *host, const char *puerto)
@@ -205,7 +219,7 @@ static int pedir(const char *host, const char *puerto, const char *orden, char r
 {
     int fd = abrir_socket(host, puerto);
     if (fd < 0) return 0;
-    int ok = escribir(fd, orden, strlen(orden)) && mensaje(fd, r);
+    int ok = escribir(fd, orden, strlen(orden), true) && mensaje(fd, r);
     close(fd);
     return ok;
 }
@@ -220,6 +234,7 @@ static int leer_venta(const char *linea, Venta *v)
 
 static const char *guardar(Tienda *t, Venta v, int disco)
 {
+    if (disco && t->registro_danado) return "ERROR REGISTRO\n";
     for (size_t i = 0; i < t->usadas; i++) {
         Venta anterior = t->ventas[i];
         if (anterior.numero == v.numero && strcmp(anterior.origen, v.origen) == 0) {
@@ -238,9 +253,15 @@ static const char *guardar(Tienda *t, Venta v, int disco)
     if (disco) {
         char fila[LINEA];
         int n = snprintf(fila, sizeof fila, "%s %lld %lld\n", v.origen, v.numero, v.monto);
+        if (n <= 0 || (size_t)n >= sizeof fila) return "ERROR REGISTRO\n";
         off_t previo = lseek(t->archivo, 0, SEEK_END);
-        if (previo < 0 || write(t->archivo, fila, (size_t)n) != n || fsync(t->archivo) != 0) {
-            if (previo >= 0 && ftruncate(t->archivo, previo) == 0) fsync(t->archivo);
+        if (previo < 0) return "ERROR REGISTRO\n";
+        /* El saldo cambia solo cuando la línea completa ya está en disco. */
+        if (!escribir(t->archivo, fila, (size_t)n, false) || !confirmar_archivo(t->archivo)) {
+            if (ftruncate(t->archivo, previo) != 0 || !confirmar_archivo(t->archivo)) {
+                t->registro_danado = true;
+                fprintf(stderr, "%s: no se pudo restaurar el registro de ventas\n", t->id);
+            }
             return "ERROR REGISTRO\n";
         }
     }
@@ -268,7 +289,9 @@ static int abrir_registro(Tienda *t, const char *ruta)
         if (!fgets(linea, sizeof linea, f)) break;
         Venta v;
         if (!strchr(linea, '\n')) {
-            ok = feof(f) && inicio >= 0 && ftruncate(fileno(f), inicio) == 0;
+            /* Tras un corte puede quedar incompleta solo la última línea. */
+            ok = feof(f) && inicio >= 0 &&
+                 ftruncate(fileno(f), inicio) == 0 && confirmar_archivo(fileno(f));
             break;
         }
         if (!leer_venta(linea, &v) || strncmp(guardar(t, v, 0), "OK", 2)) {
@@ -285,7 +308,8 @@ static int enviar_venta(const Par *p, const Venta *v)
 {
     char orden[LINEA], r[LINEA];
     snprintf(orden, sizeof orden, "DIFUNDE %s %lld %lld\n", v->origen, v->numero, v->monto);
-    return pedir(p->host, p->puerto, orden, r) && strncmp(r, "OK ", 3) == 0;
+    return pedir(p->host, p->puerto, orden, r) &&
+           (strcmp(r, "OK REGISTRADA") == 0 || strcmp(r, "OK DUPLICADA") == 0);
 }
 
 /* FIN indica que el par ya no tiene más ventas en ese punto del registro. */
@@ -505,7 +529,7 @@ static void atender(Tienda *t, int fd, int hilo)
     if (!mensaje(fd, linea)) return;
     if (t->en_cadena && strcmp(linea, "SALUDO") == 0) {
         snprintf(r, sizeof r, "SALUDO %s\n", t->id);
-        escribir(fd, r, strlen(r));
+        escribir(fd, r, strlen(r), true);
         return;
     }
     Venta v;
@@ -549,7 +573,7 @@ static void atender(Tienda *t, int fd, int hilo)
         }
     }
     dejar_turno(t, hilo);
-    escribir(fd, respuesta, strlen(respuesta));
+    escribir(fd, respuesta, strlen(respuesta), true);
 }
 
 /* Dos hilos atienden sockets; Bakery protege los cambios al registro. */
