@@ -149,7 +149,7 @@ consultar_tiendas() {
     total_cadena=
     if (( coincide )) && [[ -n $referencia ]]; then
         total_cadena=$referencia
-        printf '  Total de la cadena %s\n' "$total_cadena"
+        printf '  Total de la cadena %s (confirmado por tiendas activas)\n' "$total_cadena"
     else
         printf '  Total de la cadena pendiente de confirmar\n'
     fi

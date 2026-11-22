@@ -76,7 +76,13 @@ El escenario predeterminado mantiene a B apagada hasta el final. Para verificar 
 bash probar_recuperacion.sh
 ```
 
-Esta prueba comprueba dos reinicios con el mismo archivo. Primero B conserva sus $20.00 de ventas propias, recupera las ventas pendientes de A y C y acepta una compra nueva. Después, la cadena alcanza $100.00 mientras B está fuera. Al volver, B se pone al día y rechaza una compra. La prueba usa registros temporales y los borra al terminar.
+La prueba usa montos fijos y registros temporales:
+
+1. B conserva sus $20.00 de ventas propias, recupera el total de $70.00 y acepta una compra más.
+2. La cadena alcanza $100.00 mientras B está fuera. Al volver, B se pone al día y rechaza una compra.
+3. B guarda $8.36 y se apaga antes de compartirlos. A y C cierran con $105.27. Cuando B vuelve con su registro, las tres tiendas llegan a $113.63.
+
+En cada caso se comprueban los estados y los importes esperados. Al salir se detienen las tiendas y se borran los archivos de la prueba.
 
 En la demo predeterminada B permanece apagada hasta que termina esa corrida. Para probar un reinicio, inicia las tiendas a mano como en el ejemplo anterior. Detén B, deja a A ejecutándose y vuelve a lanzar B con el mismo identificador, puerto y archivo `ventas-B.log`. Guarda el archivo entre los dos arranques.
 
@@ -88,7 +94,7 @@ Para darle a B más tiempo para recibir compradores antes del apagón simulado, 
 
 - Cada tienda corre en un proceso. Los sockets TCP, como en los demos de cliente y servidor de clase, conectan a compradores, tiendas y monitor. El monitor solo consulta; una tienda puede vender aunque el monitor esté desconectado.
 - Los pares se identifican con `SALUDO`. Intercambian ventas individuales identificadas por origen y número de secuencia, y cada tienda suma el total en su propio registro. El comando `ESTADO` es para el monitor. `PENDIENTES` permite seguir el vaciado de envíos durante la demo.
-- El origen registra primero su venta. Los envíos iniciales siguen el orden de conexión de cada origen. El publicador espera la confirmación o el tiempo límite de cada intento. Un par que vuelve entra al final del orden activo. Al recuperar registros pendientes, la tienda los lee en el orden disponible.
+- El origen registra primero su venta. En la difusión inicial, el publicador visita a los pares en el orden de conexión y espera la confirmación o el tiempo límite de cada intento. Si un par no responde, sigue con los demás y deja su envío pendiente. Dos tiendas que venden al mismo tiempo pueden tener sus avisos intercalados. Un par que vuelve entra al final del orden activo. En la recuperación se leen los registros disponibles.
 - En las tiendas de cadena, dos hilos manejan solicitudes TCP y un tercero publica ventas. Bakery de Lamport protege el registro: cada hilo anuncia que elige, toma un número, desempata por identificador y pone su turno en cero al salir. Las esperas de red quedan fuera de esa sección. La escritura y el `fsync()` se hacen dentro del turno para que el registro y los totales avancen juntos. Una escritura lenta puede retrasar otra actualización local.
 - Si un par vuelve, recibe las ventas que se le debían. Si el origen se apaga, las tiendas activas pueden recuperar las copias que otra alcanzó a registrar. La combinación de origen y número evita duplicados. Si la única copia queda en el equipo apagado, se recupera cuando ese equipo vuelva con su archivo.
 - Cada tienda deja de vender cuando su copia del total alcanza la meta. Si dos tiendas aceptan compras simultáneas a partir de copias atrasadas, ambas ventas válidas se registran y el total puede superar $100. Los totales pueden diferir mientras haya una desconexión. En WSL el corte de luz se simula con `SIGKILL`. El cierre por meta permite responder consultas y descargar lo pendiente antes de que el script termine los procesos.

@@ -11,11 +11,12 @@ fi
 carpeta=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 temporal=$(mktemp -d)
 binario=$temporal/blackout
+registros=$temporal
 host=127.0.0.1
 declare -A puertos=([A]="$puerto_base" [B]="$((puerto_base + 1))" [C]="$((puerto_base + 2))")
 declare -A procesos=()
 
-limpiar() {
+detener_tiendas() {
     local pid
     for pid in "${procesos[@]}"; do
         kill -KILL "$pid" 2>/dev/null || true
@@ -23,6 +24,11 @@ limpiar() {
     for pid in "${procesos[@]}"; do
         wait "$pid" 2>/dev/null || true
     done
+    procesos=()
+}
+
+limpiar() {
+    detener_tiendas
     rm -rf -- "$temporal"
 }
 
@@ -34,9 +40,9 @@ fallar() {
     local tienda
     printf 'Prueba fallida. %s\n' "$1" >&2
     for tienda in A B C; do
-        if [[ -s $temporal/$tienda.salida ]]; then
+        if [[ -s $registros/$tienda.salida ]]; then
             printf '\nRegistro reciente de %s\n' "$tienda" >&2
-            tail -n 12 -- "$temporal/$tienda.salida" >&2
+            tail -n 12 -- "$registros/$tienda.salida" >&2
         fi
     done
     exit 1
@@ -49,8 +55,8 @@ iniciar() {
     for par in "$@"; do
         pares+=("$host:${puertos[$par]}")
     done
-    "$binario" tienda "$tienda" "${puertos[$tienda]}" 100.00 "$temporal/$tienda.log" \
-        "${pares[@]}" >>"$temporal/$tienda.salida" 2>&1 &
+    "$binario" tienda "$tienda" "${puertos[$tienda]}" 100.00 "$registros/$tienda.log" \
+        "${pares[@]}" >>"$registros/$tienda.salida" 2>&1 &
     procesos[$tienda]=$!
 }
 
@@ -145,5 +151,30 @@ comprobar_arranque_cerrado
 esperar_estado B 'CERRADA $30.00 $100.00'
 comprar B 1.00 'ERROR CERRADA'
 esperar_estado B 'CERRADA $30.00 $100.00'
+
+printf '\nRecuperación de una venta guardada solo en B\n'
+detener_tiendas
+registros=$temporal/venta-aislada
+mkdir -- "$registros"
+iniciar B A C
+esperar_estado B 'ABIERTA $0.00 $0.00'
+comprar B 8.36
+esperar_estado B 'ABIERTA $8.36 $8.36'
+apagar_b
+
+iniciar A B C
+iniciar C A B
+esperar_estado A 'ABIERTA $0.00 $0.00'
+esperar_estado C 'ABIERTA $0.00 $0.00'
+comprar A 49.06
+esperar_estado C 'ABIERTA $0.00 $49.06'
+comprar C 56.21
+esperar_estado A 'CERRADA $49.06 $105.27'
+esperar_estado C 'CERRADA $56.21 $105.27'
+
+iniciar B A C
+esperar_estado B 'CERRADA $8.36 $113.63'
+esperar_estado A 'CERRADA $49.06 $113.63'
+esperar_estado C 'CERRADA $56.21 $113.63'
 
 printf '\nPrueba de recuperación superada.\n'

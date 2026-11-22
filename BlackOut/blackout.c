@@ -490,6 +490,7 @@ static void *publicar(void *arg)
                 tomar_turno(t, PUBLICADOR);
                 Venta v = t->ventas[p->enviado];
                 dejar_turno(t, PUBLICADOR);
+                /* Sin el OK del par, dejamos esta venta para el siguiente intento. */
                 if (strcmp(v.origen, t->id) == 0 && !enviar_venta(p, &v)) break;
                 p->enviado++;
             }
