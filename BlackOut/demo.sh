@@ -170,20 +170,18 @@ envios_confirmados() {
 
 ejecutar_comprador() {
     trap - EXIT INT TERM
-    local indice=$1 demora pausa centavos monto respuesta detener_tienda
-    detener_tienda=$temporal/detener-${ids[indice]}
+    local indice=$1 monto respuesta
+    local pausas=(0.3 0.5 0.7 0.9 1.1)
+    local detener_tienda=$temporal/detener-${ids[indice]}
     while [[ ! -e $detener && ! -e $detener_tienda ]]; do
-        # El tiempo de llegada y el monto se eligen por separado.
-        demora=$((300 + RANDOM % 801))
-        printf -v pausa '%d.%03d' "$((demora / 1000))" "$((demora % 1000))"
-        sleep "$pausa"
+        # El comprador espera un rato al azar y luego elige cuánto gastar.
+        sleep "${pausas[RANDOM % ${#pausas[@]}]}"
         if [[ -e $detener || -e $detener_tienda ]]; then
             break
         fi
-        centavos=$((700 + RANDOM % 901))
-        printf -v monto '%d.%02d' "$((centavos / 100))" "$((centavos % 100))"
+        monto=$((7 + RANDOM % 10))
         respuesta=$("$binario" cliente "$host" "${puertos[indice]}" COMPRA "$monto" 2>/dev/null) || true
-        printf '[compra  %2ds] %s · $%s · %s\n' \
+        printf '[compra  %2ds] %s · $%d.00 · %s\n' \
             "$SECONDS" "${ids[indice]}" "$monto" "${respuesta:-SIN RESPUESTA}"
         if [[ $respuesta == 'ERROR CERRADA' ]]; then
             break
@@ -203,6 +201,7 @@ done
 
 printf 'Meta compartida de $%s para A, B y C. D usa su propia meta de $%s.\n' "${meta#\$}" "${meta#\$}"
 SECONDS=0
+# El & deja un comprador de Bash en segundo plano por tienda.
 for indice in "${!ids[@]}"; do
     ejecutar_comprador "$indice" &
     simuladores+=("$!")

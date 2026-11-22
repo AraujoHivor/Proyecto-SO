@@ -14,6 +14,12 @@ El script compila con GCC, inicia las cuatro tiendas y muestra las compras y el 
 
 En la demo se apaga B. Su línea queda como `SIN RESPUESTA` y muestra el último dato que vio el monitor. A y C siguen vendiendo. El monitor muestra un solo total cuando las tiendas activas coinciden. D cierra cuando alcanza su meta por separado. Los montos cambian en cada corrida porque las compras son al azar. La salida termina con `Fin de la demo` cuando se confirman los cierres.
 
+## De dónde salen las compras
+
+La guía menciona un generador que se entregaría aparte. Esta demo genera las compras en `demo.sh`. La función `ejecutar_comprador()` corre en segundo plano una vez por tienda. Usa `RANDOM` primero para elegir cuánto esperar y después para elegir un monto de $7 a $16. Entonces llama a `blackout cliente` para mandar la compra por TCP.
+
+Los compradores de la demo corren como procesos de Bash. Dentro de una tienda, los hilos de C atienden los pedidos y comparten las ventas con otros locales. La demo elige dólares completos para que se vea fácil. El programa guarda centavos enteros, así que una compra de $7.50 se guarda como 750 y se puede sumar con exactitud.
+
 ## Pruebas opcionales
 
 - `bash demo.sh cierre` muestra el cierre con las tres tiendas de la cadena en línea.
@@ -71,14 +77,11 @@ Inicia una tienda independiente dejando el comando hasta el archivo de ventas. P
 
 Para probar el reinicio manualmente, apaga B y vuelve a usar su comando con el mismo ID, puerto y archivo de ventas. Deja A en ejecución para que B pueda recuperar lo que le falta.
 
-## Cómo seguir el código
+## El recorrido de una venta
 
-En `blackout.c`, lee primero `atender()` para ver cómo entra una compra. Luego sigue `guardar()` para ver cuándo se registra y `publicar()` para ver cómo llega a las demás tiendas. `recuperar_ventas()` lee las ventas que quedaron pendientes. En `red.h` están la apertura del socket, la espera y la lectura de mensajes TCP.
+1. **Recibir.** En `atender()` llega el pedido `COMPRA` por TCP. La tienda revisa el monto y si aún puede vender. En `red.h` están las funciones que abren el socket y leen los mensajes.
+2. **Guardar.** En `guardar()` se comprueba el identificador de la venta, se guarda en el archivo con `fsync()` y se suma el monto. Bakery da un turno a cada hilo para que solo uno cambie el registro a la vez. Si dos hilos toman el mismo boleto, va primero el de menor índice. Al salir, deja su boleto en cero.
+3. **Compartir.** En `publicar()`, el hilo toma una copia de la venta, suelta el turno y la envía por TCP. Intenta llegar a los pares en orden de conexión y espera cada confirmación o su tiempo límite. Cada tienda suma lo que recibe. El origen y el número de venta permiten reconocer y descartar duplicados.
+4. **Recuperar.** Al volver de un apagón, la tienda abre su archivo y usa `recuperar_ventas()` para leer las ventas de los pares que responden. Si la única copia quedó en el equipo apagado, se suma cuando ese equipo vuelve con su archivo.
 
-## Cómo funciona
-
-- **Procesos y sockets.** Cada tienda es un proceso. Las tiendas y sus clientes se conectan por TCP. Las tiendas se mandan ventas individuales, con tienda de origen, número y monto. Cada tienda suma sus copias en centavos enteros.
-- **Hilos y orden.** Dos hilos atienden solicitudes y otro publica en las tiendas de cadena. La tienda de origen guarda la venta primero. Para cada tienda de origen, el publicador intenta enviar a sus pares en el orden en que se conectaron. Espera la confirmación de cada uno o el tiempo límite antes de pasar al siguiente. Si un par vuelve, queda al final del orden activo.
-- **Bakery de Lamport.** Cada hilo elige un boleto mayor que los que ve y espera a que le toque. Si dos eligen el mismo número, va primero el hilo de menor índice. Al salir deja su boleto en cero. La espera por la red queda fuera del turno. El turno cubre la escritura con `fsync()` y la actualización del total. `OK REGISTRADA` se envía después de soltar el turno.
-- **Apagón y recuperación.** El apagón se simula con `SIGKILL`. Al volver, la tienda carga su archivo y consulta ventas de los pares que responden. Puede aparecer como `RECUPERANDO` y rechazar compras mientras se pone al día. El origen y el número identifican cada venta y evitan sumarla dos veces. Si una venta quedó guardada solo en el equipo apagado, se incorpora cuando ese equipo vuelve con su archivo.
-- **Cierre.** Cada tienda deja de aceptar compras cuando su copia del total alcanza la meta. Las ventas ya aceptadas pueden llevar el total por encima de $100.00. El proceso puede responder a consultas y recibir ventas pendientes hasta que termina la demo. `PENDIENTES 0` se refiere a los pares que responden.
+Cada tienda de cadena tiene dos hilos para atender solicitudes y otro para publicar. La tienda deja de aceptar compras cuando su total llega a la meta. Las ventas que ya se aceptaron pueden hacer que lo supere. La demo simula el apagón con `SIGKILL` y permite terminar los envíos entre las tiendas activas.
