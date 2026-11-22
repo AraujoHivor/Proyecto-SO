@@ -1,23 +1,25 @@
 # BlackOut
 
-## Demo en Linux
+A, B y C son tiendas de una misma cadena y juntas tienen una meta de $100. D lleva su propia cuenta.
 
-Extrae el ZIP y abre una terminal en la carpeta `BlackOut`. Para ejecutar la demostración completa, usa:
+## Probar la demo en Linux
+
+Extrae el ZIP, abre una terminal en la carpeta `BlackOut` y ejecuta:
 
 ```bash
 bash demo.sh
 ```
 
-El comando compila el programa con GCC, inicia las tiendas, genera las compras y muestra el monitor en la misma terminal. Al terminar, detiene los procesos y borra sus archivos temporales.
+El script compila con GCC, inicia las cuatro tiendas y muestra las compras y el monitor en esa misma terminal. En Debian o Ubuntu, si hace falta el compilador, instala `build-essential` con `sudo apt update` y `sudo apt install build-essential`.
 
-A, B y C comparten una meta de **$100.00**. D lleva su cuenta aparte. Durante la demo se simula un apagón en B y el monitor muestra el total que confirman las tiendas activas.
+En la demo se apaga B. Su línea queda como `SIN RESPUESTA` y muestra el último dato que vio el monitor. A y C siguen vendiendo. El monitor muestra un solo total cuando las tiendas activas coinciden. D cierra cuando alcanza su meta por separado. Los montos cambian en cada corrida porque las compras son al azar. La salida termina con `Fin de la demo` cuando se confirman los cierres.
 
-La demo usa Bash y GCC. Si falta GCC en Debian o Ubuntu, se puede instalar con `sudo apt update` y `sudo apt install build-essential`.
+## Pruebas opcionales
 
-## Pruebas y ajustes opcionales
+- `bash demo.sh cierre` muestra el cierre con las tres tiendas de la cadena en línea.
+- `bash probar_recuperacion.sh` prueba el regreso de B con el mismo registro. Uno de los casos deja $8.36 guardados solo en B. A y C cierran con $105.27 y, cuando B vuelve, las tres muestran $113.63.
 
-- `bash demo.sh cierre` ejecuta la demo con las tres tiendas de la cadena en línea.
-- `bash probar_recuperacion.sh` reinicia B con el mismo registro y verifica con montos fijos qué pasa antes y después del cierre de la cadena.
+### Ajustes de la demo
 
 | Variable | Valor por defecto | Para qué sirve |
 | --- | --- | --- |
